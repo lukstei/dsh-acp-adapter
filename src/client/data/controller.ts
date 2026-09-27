@@ -8,7 +8,7 @@
  * store discipline: the controller is glue, not a store. It keeps the
  * authoritative private projection (revision fencing and refresh guards read
  * it) and publishes every transition through the baked store actions bound at
- * `attach` time — the `settings.section` entry declares `store:
+ * `attach` time — the plugin bundle configuration entry declares `store:
  * createAcpPanelStore`, and the inject factory receives the framework-baked
  * actions and hands them here. Attach replays the full projection (`resync`)
  * so a re-created entry store catches up in one publish; while unattached the
@@ -203,6 +203,11 @@ export class AcpPanelController {
    */
   async deleteAgent(id: string): Promise<string | undefined> {
     return this.mutate([{ op: 'unset', path: ['agents', id] }])
+  }
+
+  /** Persist the opt-in picker enhancement through the same revision fence as agent settings. */
+  async setSearchableModelPicker(enabled: boolean): Promise<string | undefined> {
+    return this.mutate([{ op: 'set', path: ['searchableModelPicker'], value: enabled }])
   }
 
   /**

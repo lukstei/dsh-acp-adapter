@@ -1,5 +1,5 @@
 /**
- * The ACP settings panel's store seat: the `settings.section`
+ * The ACP configuration page's store seat: the `plugins.bundle.config`
  * registration declares `store: createAcpPanelStore` (exclusive factory — the
  * framework mints the handle per entry; nothing module-level), and the glue
  * controller publishes through the baked actions it receives at attach time.
@@ -38,7 +38,7 @@ export interface AcpPanelSnapshot {
 const initialPanelState = (): AcpPanelSnapshot => ({
   // 与 controller 的首投影同形：scope 尚未 ready 时面板显示 loading（attach
   // 时的 resync 会立刻把真实投影灌进来，这只是工厂播种值）。
-  settings: { status: 'loading', writable: false, agents: {}, revision: undefined },
+  settings: { status: 'loading', writable: false, agents: {}, searchableModelPicker: false, revision: undefined },
   health: {
     status: 'idle', rows: [], fetchedAt: undefined, message: undefined,
     checkingAgentIds: [], agentErrors: {},

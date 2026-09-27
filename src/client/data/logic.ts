@@ -19,9 +19,11 @@ import type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../cont
 export { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, ACP_SETTINGS_NS, effectiveRuntimeOf } from '../../contract/agent-config.ts'
 export type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
 
-/** Resolved `dsh-acp` settings section. */
+/** Resolved `dsh-acp-adapter` settings section. */
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
+  /** Optional so older serialized settings snapshots and fixtures remain valid. */
+  searchableModelPicker?: boolean
 }
 
 /** Env var name: POSIX shell identifier. */
@@ -312,6 +314,7 @@ export interface PanelSettingsState {
   status: 'loading' | 'invalid' | 'unavailable' | 'ready'
   writable: boolean
   agents: Record<string, AcpAgentConfig>
+  searchableModelPicker: boolean
   revision: number | undefined
 }
 
@@ -328,6 +331,7 @@ export function panelSettingsOf(snapshot: AcpScopeSnapshot): PanelSettingsState 
     status,
     writable: snapshot.writable,
     agents: snapshot.value?.agents ?? {},
+    searchableModelPicker: snapshot.value?.searchableModelPicker ?? false,
     revision: snapshot.revision,
   }
 }
