@@ -29,7 +29,7 @@ class NativeTeamControl extends LlmAdapter {
 async function setup(teams: boolean, native = false) {
   const host = await launchAdapterWorld({ teams })
   const profile = (id: string) => ({ name: `Fixture ${id}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: id, MOCK_MCP_HTTP: '1' } })
-  await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: profile('devin'), codex: profile('codex') } })
+  await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { devin: profile('devin'), codex: profile('codex') } })
   await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === 'acp-devin')).toBe(true))
   if (native) host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-control'], new NativeTeamControl()))
   await host.ctx.agentDefaultModel.saveSelection(native ? { provider: 'native-control', model: 'native-a' } : { provider: 'acp-devin', model: 'mock-model-a' })
@@ -91,8 +91,16 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await pendingCard.getByRole('button', { name: 'calculator-b · Pending request', exact: true }).waitFor()
     expect(await pendingCard.locator('[data-team-pending-member]').count()).toBe(2)
     await host.ctx.settings.replace('locale', { preference: 'zh' })
-    await pendingCard.getByText('需要你处理 · 2 位成员', { exact: true }).waitFor()
-    expect(await pendingCard.getByText('等待审批', { exact: true }).count()).toBe(2)
+    // The locale-bound translate function causes the component to revalidate
+    // member eligibility, briefly removing rows while its fresh read settles.
+    await expect.poll(async () => {
+      const [title, approvals, members] = await Promise.all([
+        pendingCard.getByText('需要你处理 · 2 位成员', { exact: true }).count(),
+        pendingCard.getByText('等待审批', { exact: true }).count(),
+        pendingCard.locator('[data-team-pending-member]').count(),
+      ])
+      return { title, approvals, members }
+    }).toEqual({ title: 1, approvals: 2, members: 2 })
     await page.setViewportSize({ width: 680, height: 720 })
     const narrow = required(await pendingCard.boundingBox())
     expect(narrow.x).toBeGreaterThanOrEqual(0)
