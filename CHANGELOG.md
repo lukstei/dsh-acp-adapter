@@ -4,6 +4,28 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.2
+
+### 中文
+
+- MCP TypeScript SDK v2 工具调用的取消通知会继续传到正在执行的 DSH 原生工具。
+- ACP 对话继续复用 DSH 原生消息、过程分组、工具组件与布局设置；修复菜单焦点恢复和子菜单打开时的关闭行为，统一恢复操作并发控制，并在操作结果处给出提示。
+- 修复首屏活动日志加载期间的误报；保留没有可见文字、但包含工具调用的连续助手回合。
+- 修复 Agent Teams mailbox 输入缺少重复 request header 时的实时活动关联；按当前执行步骤的输入规则选择锚点，不借用旧步骤输入。
+- 外部子代理运行期间显示实时状态；工具结束而子代理尚无终态时标记为未完成，不把工具结束误作子代理完成。真实终态按宿主外部子代理投影入口保存；无法验证来源的活动不会制造子会话。
+- 将已识别的 Devin 资源或用量配额耗尽归为独立错误，并提示查看 Agent 用量限制；不自动重试，未知 JSON-RPC 错误仍按协议错误处理。
+- 继续仅支持 DSH `0.2.0-rc.2`。本版的协议夹具与真实 Agent 运行属于不同验证层级；详见 E2E 指南。
+
+### English
+
+- Forward MCP TypeScript SDK v2 cancellation notifications to active native DSH tool execution.
+- Continue to render ACP conversations through DSH's native messages, process groups, tool components, and display settings. Fix menu focus restoration and dismissal around nested menus, serialize recovery actions, and report operation outcomes.
+- Fix false errors while the activity journal is loading, and preserve consecutive assistant turns that contain tool calls but no visible text.
+- Associate live activity with Agent Teams mailbox inputs when a duplicate request header is omitted, using the current step's input rules without borrowing an input from an earlier step.
+- Show external subagents while they run. If a tool ends before the child has a terminal result, mark the child unfinished instead of treating the tool result as child completion. Persist verified terminal results through the host external-subagent projection entry; unverified activity does not create a subagent session.
+- Classify recognized Devin resource or usage-quota exhaustion separately and direct users to check Agent usage limits. Do not retry automatically; unknown JSON-RPC errors remain protocol errors.
+- This release still targets DSH `0.2.0-rc.2` only. Protocol fixtures and real-Agent runs are separate levels of evidence; see the E2E guide.
+
 ## 0.2.0-rc.2.1 (2026-10-03)
 
 ### 中文
