@@ -44,6 +44,7 @@ import {
   toOptionsSnapshotRecord,
   type AcpBindingData,
   type AcpBindingRecord,
+  type AcpActivityRecord,
   type AcpOptionsSnapshotRecord,
   type AcpRecoveryState,
   type AcpSidecar,
@@ -134,6 +135,99 @@ async function latestBinding(sessionId: string): Promise<AcpBindingRecord | unde
 /** 直插 SQL 夹具连接（行级容错/索引表篡改用；用完必须 close）。 */
 function rawDb(): DatabaseSync {
   return new DatabaseSync(dbFile())
+}
+
+type LegacyActivityFixture = {
+  readonly dsh_session_id: string
+  readonly activity_id: string
+  readonly owner_dsh_session_id: string
+  readonly prompt_anchor_message_id: string
+  readonly activity_seq: number
+  readonly revision_seq: number
+  readonly time: number
+  readonly kind: string
+  readonly status: string
+  readonly presentation: string
+  readonly raw_detail: string | null
+  readonly raw_detail_ref: string | null
+  readonly content_index: number | null
+  readonly display_detail: string | null
+}
+
+const MIGRATION_ACTIVITY: Parameters<AcpSidecar['upsertActivity']>[0] = {
+  dshSessionId: 'sess-migration',
+  activityId: 'act-current',
+  ownerDshSessionId: 'owner-1',
+  promptAnchorMessageId: 'anchor-1',
+  time: TIME_BASE,
+  kind: 'plan',
+  status: 'running',
+  presentation: 'Current activity',
+  rawDetail: 'current raw detail',
+  rawDetailRef: 'current-ref',
+  contentIndex: 7,
+  display: { plan: [{ content: 'Current plan detail', status: 'in_progress' }] },
+}
+
+function legacyFixtureFromActivity(activity: AcpActivityRecord): LegacyActivityFixture {
+  return {
+    dsh_session_id: activity.dshSessionId,
+    activity_id: activity.activityId,
+    owner_dsh_session_id: activity.ownerDshSessionId,
+    prompt_anchor_message_id: activity.promptAnchorMessageId,
+    activity_seq: activity.activitySeq,
+    revision_seq: activity.revisionSeq,
+    time: activity.time,
+    kind: activity.kind,
+    status: activity.status,
+    presentation: activity.presentation,
+    raw_detail: activity.rawDetail ?? null,
+    raw_detail_ref: activity.rawDetailRef ?? null,
+    content_index: activity.contentIndex ?? null,
+    display_detail: activity.display === undefined ? null : JSON.stringify(activity.display),
+  }
+}
+
+async function seedLeftoverActivityJournal(
+  rowsForCurrent: (current: AcpActivityRecord) => readonly LegacyActivityFixture[],
+): Promise<AcpActivityRecord> {
+  const current = await store.upsertActivity(MIGRATION_ACTIVITY)
+  const rows = rowsForCurrent(current)
+  await store.dispose()
+  const db = rawDb()
+  try {
+    db.exec(`CREATE TABLE activity_journal_legacy (
+      dsh_session_id TEXT, activity_id TEXT, owner_dsh_session_id TEXT,
+      prompt_anchor_message_id TEXT, activity_seq INTEGER, revision_seq INTEGER,
+      time INTEGER, kind TEXT, status TEXT, presentation TEXT, raw_detail TEXT,
+      raw_detail_ref TEXT, content_index INTEGER, display_detail TEXT
+    ) STRICT`)
+    const insert = db.prepare(
+      'INSERT INTO activity_journal_legacy (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    for (const row of rows) {
+      insert.run(
+        row.dsh_session_id,
+        row.activity_id,
+        row.owner_dsh_session_id,
+        row.prompt_anchor_message_id,
+        row.activity_seq,
+        row.revision_seq,
+        row.time,
+        row.kind,
+        row.status,
+        row.presentation,
+        row.raw_detail,
+        row.raw_detail_ref,
+        row.content_index,
+        row.display_detail,
+      )
+    }
+  } finally {
+    db.close()
+  }
+  store = createAcpSidecar({ root, now: () => TIME_BASE + 1, warn: (message) => warns.push(message) })
+  return current
 }
 
 beforeEach(() => {
@@ -1469,5 +1563,467 @@ describe('pending member mode storage', () => {
     expect(await store.readModeIntent(id)).toEqual(latest)
     await store.clearModeIntent(id, latest)
     expect(await store.readModeIntent(id)).toBeUndefined()
+  })
+})
+
+// Hardening tests for recent fixes
+describe('hardening: seq reuse, batch drain fallback, activity_journal migration', () => {
+  it('preserves in-memory seq reservation after binding rollback so queued audit does not get duplicate seq', async () => {
+    const sid = 'sess-seq-reuse'
+    // Reserve one queued seq, then fail a synchronous binding transaction before
+    // the queue-drain microtask can persist the first entry.
+    const queuedBeforeFailure = store.append(SessionId(sid), {
+      kind: 'replay-assessment',
+      data: { status: 'not-compared' },
+    })
+
+    // Inject a binding write failure via trigger on bindings
+    const triggerDb = rawDb()
+    try {
+      triggerDb.exec(
+        `CREATE TRIGGER fail_bind BEFORE INSERT ON bindings WHEN NEW.dsh_session_id = '${sid}' BEGIN SELECT RAISE(ABORT, 'injected bind failure'); END`,
+      )
+    } finally {
+      triggerDb.close()
+    }
+
+    // The binding audit reserves a later seq before its transaction rolls back.
+    const failedBinding = store.append(SessionId(sid), { kind: 'binding', data: BINDING_A })
+    const queuedAfterFailure = store.append(SessionId(sid), {
+      kind: 'replay-assessment',
+      data: { status: 'not-compared' },
+    })
+    await expect(failedBinding).rejects.toThrow()
+    await Promise.all([queuedBeforeFailure, queuedAfterFailure])
+
+    // Flush queued audits (microtask drain may have been scheduled); ensure queued audit persisted
+    await store.flush()
+    const lines = await readEnvelopes(sid)
+    const replayRows = lines.filter((line) => line.kind === 'replay-assessment')
+    expect(replayRows).toHaveLength(2)
+    expect(replayRows.map((line) => line.seq)).toEqual([1, 3])
+    expect(new Set(lines.map((line) => line.seq)).size).toBe(lines.length)
+  })
+
+  it('on batch flush failure falls back to per-item writes and counts dropped items', async () => {
+    const sid = 'sess-batch'
+    // Queue the good/poisoned/good entries in one synchronous batch before its drain microtask.
+    const batch = [
+      store.append(SessionId(sid), { kind: 'replay-assessment', data: { status: 'matched' } }),
+      store.append(SessionId(sid), { kind: 'replay-assessment', data: { bad: BigInt(1) } as unknown as any }),
+      store.append(SessionId(sid), { kind: 'replay-assessment', data: { status: 'different' } }),
+    ]
+    await Promise.all(batch)
+
+    // Flush explicitly
+    await store.flush()
+
+    const lines = await readEnvelopes(sid)
+    // Both good items survive whole-batch failure and the poisoned row is dropped.
+    const persisted = lines.filter((line) => line.kind === 'replay-assessment')
+    expect(persisted).toHaveLength(2)
+    expect(persisted.map((line) => (line.payload as { status?: string }).status)).toEqual(['matched', 'different'])
+    // droppedEntries should have incremented by 1
+    expect((store as unknown as { droppedEntries: number }).droppedEntries).toBe(1)
+  })
+
+  it('recovers leftover activity_journal_legacy rows into new activity_journal when new table exists', async () => {
+    // Pre-seed DB: create new-format activity_journal and a leftover legacy table with a row
+    const pre = rawDb()
+    try {
+      pre.exec(`CREATE TABLE IF NOT EXISTS activity_journal (
+        dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
+        prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER NOT NULL,
+        time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
+        raw_detail TEXT, raw_detail_ref TEXT, PRIMARY KEY (dsh_session_id, revision_seq)
+      ) STRICT`)
+      // ensure other minimal tables exist so migration logic runs in the same environment
+      pre.exec(`CREATE TABLE IF NOT EXISTS activity_journal_legacy (
+        dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
+        prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER,
+        time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
+        raw_detail TEXT, raw_detail_ref TEXT
+      ) STRICT`)
+      const insert = pre.prepare(
+        'INSERT INTO activity_journal_legacy (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      insert.run('sess-legacy', 'act-1', 'owner-1', 'anchor-1', 1, 1, TIME_BASE, 'tool', 'running', 'p')
+    } finally {
+      pre.close()
+    }
+
+    // Open sidecar which should migrate legacy rows into activity_journal and drop legacy table
+    await store.dispose()
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 1, warn: (m) => warns.push(m) })
+
+    const inspection = rawDb()
+    try {
+      const row = inspection
+        .prepare('SELECT COUNT(*) AS n FROM activity_journal WHERE dsh_session_id = ?')
+        .get('sess-legacy') as { n: number }
+      expect(row.n).toBeGreaterThanOrEqual(1)
+      const legacyExists = inspection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_journal_legacy'")
+        .get()
+      expect(legacyExists).toBeUndefined()
+    } finally {
+      inspection.close()
+    }
+  })
+
+  it('imports non-conflicting legacy revisions and preserves optional activity columns', async () => {
+    await seedLeftoverActivityJournal((current) => [
+      {
+        ...legacyFixtureFromActivity(current),
+        dsh_session_id: 'sess-imported',
+        activity_id: 'act-imported',
+        owner_dsh_session_id: 'owner-imported',
+        prompt_anchor_message_id: 'anchor-imported',
+        activity_seq: 1,
+        revision_seq: 1,
+        time: TIME_BASE + 10,
+        presentation: 'Imported activity',
+        raw_detail: 'imported raw detail',
+        raw_detail_ref: 'imported-ref',
+        content_index: 19,
+        display_detail: '{"plan":[{"content":"Imported plan","status":"completed"}]}',
+      },
+    ])
+
+    const snapshot = await store.activitySnapshot(SessionId('sess-imported'))
+    expect(snapshot).toHaveLength(1)
+    expect(snapshot[0]).toMatchObject({
+      activityId: 'act-imported',
+      contentIndex: 19,
+      rawDetail: 'imported raw detail',
+      rawDetailRef: 'imported-ref',
+      display: { plan: [{ content: 'Imported plan', status: 'completed' }] },
+    })
+    const db = rawDb()
+    try {
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'").get(),
+      ).toBeUndefined()
+      expect(
+        db
+          .prepare('SELECT content_index, display_detail FROM activity_journal WHERE dsh_session_id = ?')
+          .get('sess-imported'),
+      ).toEqual({
+        content_index: 19,
+        display_detail: '{"plan":[{"content":"Imported plan","status":"completed"}]}',
+      })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('drops a legacy table when its colliding primary-key row is an exact match', async () => {
+    await seedLeftoverActivityJournal((current) => [legacyFixtureFromActivity(current)])
+
+    const snapshot = await store.activitySnapshot(SessionId('sess-migration'))
+    expect(snapshot).toHaveLength(1)
+    const db = rawDb()
+    try {
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'").get(),
+      ).toBeUndefined()
+    } finally {
+      db.close()
+    }
+    expect(warns.some((message) => message.includes('conflicting legacy activity journal'))).toBe(false)
+  })
+
+  it('retains a same-revision row for a different activity instead of discarding it', async () => {
+    await seedLeftoverActivityJournal((current) => [
+      { ...legacyFixtureFromActivity(current), activity_id: 'different-activity' },
+    ])
+
+    const snapshot = await store.activitySnapshot(SessionId('sess-migration'))
+    expect(snapshot.map((activity) => activity.activityId)).toEqual(['act-current'])
+    const db = rawDb()
+    try {
+      expect(
+        db.prepare('SELECT activity_id FROM activity_journal_legacy WHERE dsh_session_id = ?').get('sess-migration'),
+      ).toEqual({ activity_id: 'different-activity' })
+    } finally {
+      db.close()
+    }
+    expect(warns).toContain(
+      'dsh-acp sidecar: retained 1 conflicting legacy activity journal row(s); original rows remain available',
+    )
+  })
+
+  it('retains a same-activity, same-revision row when its content differs', async () => {
+    await seedLeftoverActivityJournal((current) => [
+      { ...legacyFixtureFromActivity(current), presentation: 'Different content' },
+    ])
+
+    const snapshot = await store.activitySnapshot(SessionId('sess-migration'))
+    expect(snapshot).toHaveLength(1)
+    expect(snapshot[0]?.presentation).toBe('Current activity')
+    const db = rawDb()
+    try {
+      expect(
+        db.prepare('SELECT presentation FROM activity_journal_legacy WHERE dsh_session_id = ?').get('sess-migration'),
+      ).toEqual({ presentation: 'Different content' })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('imports safe rows from a mixed legacy table and retries retained conflicts idempotently on reopen', async () => {
+    await seedLeftoverActivityJournal((current) => {
+      const base = legacyFixtureFromActivity(current)
+      return [
+        { ...base, presentation: 'Conflicting revision' },
+        {
+          ...base,
+          activity_id: 'act-safe',
+          activity_seq: 2,
+          revision_seq: 2,
+          time: TIME_BASE + 2,
+          presentation: 'Safe imported revision',
+          content_index: 22,
+          display_detail: '{"plan":[{"content":"Safe detail","status":"pending"}]}',
+        },
+      ]
+    })
+
+    expect(await store.activitySnapshot(SessionId('sess-migration'))).toMatchObject([
+      { activityId: 'act-current', presentation: 'Current activity' },
+      { activityId: 'act-safe', presentation: 'Safe imported revision', contentIndex: 22 },
+    ])
+    let db = rawDb()
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS count FROM activity_journal_legacy').get()).toEqual({ count: 2 })
+    } finally {
+      db.close()
+    }
+
+    await store.dispose()
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 3, warn: (message) => warns.push(message) })
+    expect(await store.activitySnapshot(SessionId('sess-migration'))).toHaveLength(2)
+    db = rawDb()
+    try {
+      expect(
+        db.prepare('SELECT COUNT(*) AS count FROM activity_journal WHERE dsh_session_id = ?').get('sess-migration'),
+      ).toEqual({ count: 2 })
+      expect(db.prepare('SELECT COUNT(*) AS count FROM activity_journal_legacy').get()).toEqual({ count: 2 })
+    } finally {
+      db.close()
+    }
+    expect(warns.filter((message) => message.includes('conflicting legacy activity journal'))).toHaveLength(2)
+  })
+
+  it('migrates an old activity schema atomically without dropping optional columns', async () => {
+    await store.dispose()
+    const db = rawDb()
+    try {
+      db.exec(`CREATE TABLE activity_journal (
+        dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
+        prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER NOT NULL,
+        time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
+        raw_detail TEXT, raw_detail_ref TEXT, content_index INTEGER, display_detail TEXT,
+        PRIMARY KEY (dsh_session_id, activity_id)
+      ) STRICT`)
+      db.prepare(
+        'INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        'sess-old-schema',
+        'act-old-schema',
+        'owner-old',
+        'anchor-old',
+        3,
+        4,
+        TIME_BASE + 4,
+        'plan',
+        'running',
+        'Old schema activity',
+        31,
+        '{"plan":[{"content":"Old schema detail","status":"pending"}]}',
+      )
+    } finally {
+      db.close()
+    }
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 5, warn: (message) => warns.push(message) })
+
+    expect(await store.activitySnapshot(SessionId('sess-old-schema'))).toMatchObject([
+      {
+        activityId: 'act-old-schema',
+        activitySeq: 3,
+        revisionSeq: 4,
+        contentIndex: 31,
+        display: { plan: [{ content: 'Old schema detail', status: 'pending' }] },
+      },
+    ])
+    const inspection = rawDb()
+    try {
+      expect(
+        inspection
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'")
+          .get(),
+      ).toBeUndefined()
+      expect(
+        inspection
+          .prepare('SELECT content_index, display_detail FROM activity_journal WHERE activity_id = ?')
+          .get('act-old-schema'),
+      ).toEqual({
+        content_index: 31,
+        display_detail: '{"plan":[{"content":"Old schema detail","status":"pending"}]}',
+      })
+      expect(
+        inspection
+          .prepare(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name IN ('activity_session_id_revision_desc', 'activity_session_anchor_id_revision_desc') ORDER BY name",
+          )
+          .all(),
+      ).toEqual([
+        { name: 'activity_session_anchor_id_revision_desc', tbl_name: 'activity_journal' },
+        { name: 'activity_session_id_revision_desc', tbl_name: 'activity_journal' },
+      ])
+    } finally {
+      inspection.close()
+    }
+  })
+
+  it('rolls back a structurally invalid old-schema migration without renaming or dropping its source rows', async () => {
+    await store.dispose()
+    const old = rawDb()
+    try {
+      old.exec(`CREATE TABLE activity_journal (
+        dsh_session_id TEXT NOT NULL, activity_id TEXT, owner_dsh_session_id TEXT NOT NULL,
+        prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER NOT NULL,
+        time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+        raw_detail TEXT, raw_detail_ref TEXT, content_index INTEGER, display_detail TEXT
+      ) STRICT`)
+      old
+        .prepare(
+          'INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          'sess-invalid-old-schema',
+          'act-invalid-schema',
+          'owner-invalid',
+          'anchor-invalid',
+          1,
+          1,
+          TIME_BASE,
+          'tool',
+          'running',
+          45,
+          '{"unavailable":"invalid"}',
+        )
+    } finally {
+      old.close()
+    }
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 6, warn: (message) => warns.push(message) })
+
+    await expect(store.activitySnapshot(SessionId('sess-invalid-old-schema'))).rejects.toThrow(/presentation/)
+    const inspection = rawDb()
+    try {
+      const schema = inspection
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'")
+        .get() as { sql: string }
+      expect(schema.sql).not.toContain('PRIMARY KEY (dsh_session_id, revision_seq)')
+      expect(
+        inspection.prepare('SELECT activity_id, content_index, display_detail FROM activity_journal').get(),
+      ).toEqual({
+        activity_id: 'act-invalid-schema',
+        content_index: 45,
+        display_detail: '{"unavailable":"invalid"}',
+      })
+      expect(
+        inspection
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'")
+          .get(),
+      ).toBeUndefined()
+    } finally {
+      inspection.close()
+    }
+  })
+
+  it('moves named activity indexes off a retained conflicting legacy table and keeps them on the current table after reopen', async () => {
+    const current = await store.upsertActivity(MIGRATION_ACTIVITY)
+    await store.dispose()
+    const db = rawDb()
+    try {
+      db.exec(`CREATE TABLE activity_journal_legacy (
+        dsh_session_id TEXT, activity_id TEXT, owner_dsh_session_id TEXT,
+        prompt_anchor_message_id TEXT, activity_seq INTEGER, revision_seq INTEGER,
+        time INTEGER, kind TEXT, status TEXT, presentation TEXT, raw_detail TEXT,
+        raw_detail_ref TEXT, content_index INTEGER, display_detail TEXT
+      ) STRICT`)
+      const legacy = { ...legacyFixtureFromActivity(current), presentation: 'Preserved conflicting content' }
+      db.prepare(
+        'INSERT INTO activity_journal_legacy (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        legacy.dsh_session_id,
+        legacy.activity_id,
+        legacy.owner_dsh_session_id,
+        legacy.prompt_anchor_message_id,
+        legacy.activity_seq,
+        legacy.revision_seq,
+        legacy.time,
+        legacy.kind,
+        legacy.status,
+        legacy.presentation,
+        legacy.raw_detail,
+        legacy.raw_detail_ref,
+        legacy.content_index,
+        legacy.display_detail,
+      )
+      db.exec(`
+        DROP INDEX activity_session_id_revision_desc;
+        DROP INDEX activity_session_anchor_id_revision_desc;
+        CREATE INDEX activity_session_id_revision_desc
+          ON activity_journal_legacy(dsh_session_id, activity_id, revision_seq DESC);
+        CREATE INDEX activity_session_anchor_id_revision_desc
+          ON activity_journal_legacy(dsh_session_id, prompt_anchor_message_id, activity_id, revision_seq DESC);
+      `)
+    } finally {
+      db.close()
+    }
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 2, warn: (message) => warns.push(message) })
+
+    await store.activitySnapshot(SessionId('sess-migration'))
+    let inspection = rawDb()
+    try {
+      expect(
+        inspection
+          .prepare(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name IN ('activity_session_id_revision_desc', 'activity_session_anchor_id_revision_desc') ORDER BY name",
+          )
+          .all(),
+      ).toEqual([
+        { name: 'activity_session_anchor_id_revision_desc', tbl_name: 'activity_journal' },
+        { name: 'activity_session_id_revision_desc', tbl_name: 'activity_journal' },
+      ])
+      expect(
+        inspection
+          .prepare('SELECT presentation FROM activity_journal_legacy WHERE dsh_session_id = ?')
+          .get('sess-migration'),
+      ).toEqual({ presentation: 'Preserved conflicting content' })
+    } finally {
+      inspection.close()
+    }
+
+    await store.dispose()
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 3, warn: (message) => warns.push(message) })
+    await store.activitySnapshot(SessionId('sess-migration'))
+    inspection = rawDb()
+    try {
+      expect(
+        inspection
+          .prepare(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name IN ('activity_session_id_revision_desc', 'activity_session_anchor_id_revision_desc') ORDER BY name",
+          )
+          .all(),
+      ).toEqual([
+        { name: 'activity_session_anchor_id_revision_desc', tbl_name: 'activity_journal' },
+        { name: 'activity_session_id_revision_desc', tbl_name: 'activity_journal' },
+      ])
+    } finally {
+      inspection.close()
+    }
   })
 })
