@@ -1457,6 +1457,23 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(withoutSkill.lease.instructions).toContain('No DSH skill-loading entry point is listed')
   })
 
+  it('instructs Antigravity to present review sidebar artifacts through the present tool', async () => {
+    const withPresent = await setup('antigravity', ['present'], false)
+    expect(withPresent.client.getInstructions()).toContain(
+      'To display artifacts, plans, research, architectures, or reviews in the DSH review sidebar',
+    )
+    expect(withPresent.client.getInstructions()).toContain('call the DSH tool "present"')
+    expect(withPresent.lease.instructions).toContain('call the DSH tool "present"')
+
+    const withoutPresent = await setup('antigravity', ['file_read'], false)
+    expect(withoutPresent.client.getInstructions()).not.toContain('call the DSH tool "present"')
+    expect(withoutPresent.lease.instructions).not.toContain('call the DSH tool "present"')
+
+    const nonAntigravity = await setup(undefined, ['present'], false)
+    expect(nonAntigravity.client.getInstructions()).not.toContain('call the DSH tool "present"')
+    expect(nonAntigravity.lease.instructions).not.toContain('call the DSH tool "present"')
+  })
+
   it('keeps correlated Codex MCP approvals manual when Ask is selected', async () => {
     const { lease, name, server } = await setup('codex', ['project_lookup'], false, 'lead', async () => 'ask')
     lease.beginPrompt(new AbortController().signal)

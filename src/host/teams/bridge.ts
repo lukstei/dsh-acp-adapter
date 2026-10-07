@@ -52,13 +52,21 @@ const TEAM_TOOLS = [
   'team_task_get',
   'team_task_update',
 ] as const
-function bridgeInstructions(names: ReadonlyMap<string, ToolDefinition>, hasTeams: boolean): string {
+function bridgeInstructions(
+  names: ReadonlyMap<string, ToolDefinition>,
+  hasTeams: boolean,
+  wireProfile?: string,
+): string {
   const skillRoute = names.has('skill')
     ? 'The DSH MCP tool "skill" is listed; access DSH skill-catalog entries through that tool using its exact tools/list schema and names.'
     : names.has(RUN_CODE_NAME)
       ? `No direct DSH skill tool is listed. If DSH skill access is exposed through the generated SDK, call it inside "${RUN_CODE_NAME}" using the host-provided SDK instructions and listed schema; do not invent a direct skill tool.`
       : 'No DSH skill-loading entry point is listed. Do not claim DSH skill-catalog entries are available through an Agent-native skill tool; explain that this DSH connection has no listed skill entry point.'
-  return `These are native DSH tools available to this session. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.' : ''}`
+  const presentRoute =
+    names.has('present') && wireProfile === 'antigravity'
+      ? ' To display artifacts, plans, research, architectures, or reviews in the DSH review sidebar, call the DSH tool "present" with the file path and description. Writing markdown files to disk or mentioning them in text will not display them in the DSH review sidebar without calling "present".'
+      : ''
+  return `These are native DSH tools available to this session. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${presentRoute}${hasTeams ? ' Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.' : ''}`
 }
 const isTeamTool = (name: string): boolean => (TEAM_TOOLS as readonly string[]).includes(name)
 const diagnosticTools = new Set<string>(TEAM_TOOLS)
@@ -539,7 +547,7 @@ export async function createTeamBridge(
   // The connection owns caller identity. Keep native tool names intact so
   // upstream prompts, descriptions and plugin instructions share one contract.
   const names = definitions
-  const scopedInstructions = bridgeInstructions(names, hasTeams)
+  const scopedInstructions = bridgeInstructions(names, hasTeams, wireProfile)
   const presented = new Map<string, string>()
   const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
   const plainRecord = (value: unknown): Record<string, unknown> | undefined => {
