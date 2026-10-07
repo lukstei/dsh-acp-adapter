@@ -1466,9 +1466,9 @@ describe('session-owned native Teams MCP bridge', () => {
 
     const withoutPresent = await setup('antigravity', ['file_read'], false)
     expect(withoutPresent.client.getInstructions()).not.toContain('- Tool "present":')
-    expect(withoutPresent.client.getInstructions()).not.toContain('Artifact Directory Path')
+    expect(withoutPresent.client.getInstructions()).not.toContain('review sidebar')
     expect(withoutPresent.lease.instructions).not.toContain('- Tool "present":')
-    expect(withoutPresent.lease.instructions).not.toContain('Artifact Directory Path')
+    expect(withoutPresent.lease.instructions).not.toContain('review sidebar')
 
     const nonAntigravity = await setup(undefined, ['present'], false)
     expect(nonAntigravity.client.getInstructions()).not.toContain('- Tool "present":')

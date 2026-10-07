@@ -85,7 +85,7 @@ function bridgeInstructions(
     const targetServer = serverName ?? 'the DSH MCP server'
     const toolSchemas = formatAntigravityToolSchemas(names)
     const presentRoute = names.has('present')
-      ? ' Always write markdown artifacts, plans, research notes, and reviews into the session Artifact Directory Path (<appDataDir>/brain/<conversation-id>/) — never into the project repository root. To display them in the DSH review sidebar, call the DSH tool "present" via call_mcp_tool with Arguments: { files: [{ path: "<ArtifactDirectoryPath>/<filename>.md", description?: "<desc>" }] }.'
+      ? ' To display them in the DSH review sidebar, call the DSH tool "present" via call_mcp_tool with Arguments: { files: [{ path: "<ArtifactDirectoryPath>/<filename>.md", description?: "<desc>" }] }.'
       : ''
     return [
       'You support batch function calling. When you need to execute multiple operations that are independent of each other, you SHOULD call multiple tools in parallel in a single turn. This is much more efficient than calling them sequentially.',
@@ -99,7 +99,12 @@ function bridgeInstructions(
       '- ask_question: ask user questions',
       'Do not search configuration files or codebase for native tool definitions.',
       '',
-      `Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool with ServerName: "${targetServer}", ToolName: "<name>", and Arguments.${presentRoute}`,
+      'File isolation rules:',
+      '- Never write scratch files, one-off debug scripts, test data, or artifacts into the project repository root.',
+      '- Save temporary/scratch scripts and one-off test data files exclusively in `<ArtifactDirectoryPath>/scratch/`.',
+      `- Write markdown artifacts, plans, research notes, and reviews into the session Artifact Directory Path (<appDataDir>/brain/<conversation-id>/).${presentRoute}`,
+      '',
+      `Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool with ServerName: "${targetServer}", ToolName: "<name>", and Arguments.`,
       'Full schemas: For detailed documentation, nested options, and complete schemas of any MCP tool, use view_file on its schema file in the directory specified in <mcp_servers> above (~/.gemini/antigravity-acp/brain/<id>/mcp/<serverName>/<toolName>.json).',
       '',
       toolSchemas,
