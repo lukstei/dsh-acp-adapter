@@ -37,6 +37,7 @@ describe('antigravity MCP adapter and schema parsing', () => {
 
       expect(resolveAntigravityNativeTool({ name: 'ask_question' })).toBe('ask_question')
       expect(resolveAntigravityNativeTool({ title: 'ask_question' })).toBe('ask_question')
+      expect(resolveAntigravityNativeTool({ toolCallId: 'interaction_aba27307' })).toBe('ask_question')
       expect(resolveAntigravityNativeTool({ rawInput: { questions: [] } })).toBe('ask_question')
 
       expect(resolveAntigravityNativeTool({ kind: 'other', title: 'random' })).toBeUndefined()

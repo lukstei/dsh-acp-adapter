@@ -263,10 +263,16 @@ export function createAcpNativePermissionHandler(
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
     const agent = deps.getAgent()
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
-    const allowOnce = params.options.find((option) => option.kind === 'allow_once')
+    const allows = params.options.filter((option) => option.kind === 'allow_once')
     const reject = params.options.find((option) => option.kind === 'reject_once')
+    const isInteractive =
+      params.toolCall.toolCallId.startsWith('interaction_') ||
+      params.toolCall.name === 'ask_question' ||
+      params.toolCall.title === 'ask_question' ||
+      allows.length > 1
 
-    if (deps.approval !== undefined && allowOnce !== undefined) {
+    if (deps.approval !== undefined && !isInteractive && allows.length === 1) {
+      const allowOnce = allows[0]!
       try {
         const outcome = await deps.approval.request({
           agent,
@@ -298,7 +304,17 @@ export function createAcpNativePermissionHandler(
     const renderedLabels = optionLabels(params.options, copy)
     const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
     try {
-      const detail = permissionQuestionDetail(params.toolCall, copy)
+      const detail = isInteractive ? undefined : permissionQuestionDetail(params.toolCall, copy)
+      const questionTitle =
+        typeof params.toolCall.title === 'string' &&
+        params.toolCall.title.trim() !== '' &&
+        params.toolCall.title.trim() !== 'ask_question'
+          ? params.toolCall.title.trim()
+          : undefined
+      const question =
+        isInteractive && questionTitle !== undefined
+          ? questionTitle
+          : buildPermissionReason(params, copy, { includeExecuteDetails: false })
       const answer = await deps.userQuestions.ask({
         agent,
         questions: [
@@ -307,7 +323,7 @@ export function createAcpNativePermissionHandler(
             // Keep the header compact and put the exact command in the native
             // card's scrollable Markdown detail area, which preserves line
             // breaks and does not require a second custom permission UI.
-            question: buildPermissionReason(params, copy, { includeExecuteDetails: false }),
+            question,
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),
           },

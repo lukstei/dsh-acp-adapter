@@ -329,3 +329,40 @@ it.each([
   expect(ask).not.toHaveBeenCalled()
   expect(records.at(-1)?.data).not.toMatchObject({ selectedOptionKind: 'reject_always' })
 })
+
+it('routes multi-choice questions with multiple allow_once options to native userQuestions even when approval is configured', async () => {
+  const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+  const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+    answers: [{ id: questions[0]!.id, selected: ['Submit as a single combined pull request'] }],
+  }))
+  const handler = createAcpNativePermissionHandler({
+    approval,
+    userQuestions: { ask },
+    getAgent: () => ({ id: 'live-agent' }),
+  })
+  const res = await handler({
+    sessionId: 's1',
+    toolCall: {
+      toolCallId: 'interaction_aba27307',
+      title: 'How should we package the upstream pull request(s)?',
+      kind: 'other',
+    },
+    options: [
+      option('1', '(Recommended) Split into three separate PRs with dedicated branches and commit scopes', 'allow_once'),
+      option('2', 'Submit as a single combined pull request', 'allow_once'),
+    ],
+  })
+  expect(approval.request).not.toHaveBeenCalled()
+  expect(ask).toHaveBeenCalledOnce()
+  expect(ask.mock.calls[0]![0].questions[0]).toMatchObject({
+    question: 'How should we package the upstream pull request(s)?',
+    options: [
+      { label: '(Recommended) Split into three separate PRs with dedicated branches and commit scopes' },
+      { label: 'Submit as a single combined pull request' },
+    ],
+  })
+  expect(res).toEqual({
+    outcome: { outcome: 'selected', optionId: '2' },
+  })
+})
+

@@ -30,10 +30,15 @@ export function toPlainRecord(value: unknown): Record<string, unknown> | undefin
 export type AntigravityNativeToolName = 'bash' | 'read' | 'edit' | 'ask_question'
 
 export function resolveAntigravityNativeTool(
-  call: Pick<acp.ToolCallUpdate, 'kind' | 'name' | 'title' | 'rawInput'>,
+  call: Pick<acp.ToolCallUpdate, 'kind' | 'name' | 'title' | 'rawInput'> & { toolCallId?: string },
 ): AntigravityNativeToolName | undefined {
   const input = toPlainRecord(call.rawInput)
-  if (call.name === 'ask_question' || call.title === 'ask_question' || (input !== undefined && 'questions' in input)) {
+  if (
+    call.name === 'ask_question' ||
+    call.title === 'ask_question' ||
+    call.toolCallId?.startsWith('interaction_') ||
+    (input !== undefined && 'questions' in input)
+  ) {
     return 'ask_question'
   }
   if (call.kind === 'execute' || (input !== undefined && 'CommandLine' in input)) return 'bash'
