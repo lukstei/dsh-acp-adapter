@@ -85,7 +85,7 @@ function bridgeInstructions(
     const targetServer = serverName ?? 'the DSH MCP server'
     const toolSchemas = formatAntigravityToolSchemas(names)
     const presentRoute = names.has('present')
-      ? ' To display artifacts, plans, research, architectures, or reviews in the DSH review sidebar, call the DSH tool "present" via call_mcp_tool with Arguments: { files: [{ path: "<path>", description?: "<desc>" }] }.'
+      ? ' Always write markdown artifacts, plans, research notes, and reviews into the session Artifact Directory Path (<appDataDir>/brain/<conversation-id>/) — never into the project repository root. To display them in the DSH review sidebar, call the DSH tool "present" via call_mcp_tool with Arguments: { files: [{ path: "<ArtifactDirectoryPath>/<filename>.md", description?: "<desc>" }] }.'
       : ''
     return [
       'You support batch function calling. When you need to execute multiple operations that are independent of each other, you SHOULD call multiple tools in parallel in a single turn. This is much more efficient than calling them sequentially.',

@@ -1460,11 +1460,15 @@ describe('session-owned native Teams MCP bridge', () => {
   it('instructs Antigravity to present review sidebar artifacts through the present tool', async () => {
     const withPresent = await setup('antigravity', ['present'], false)
     expect(withPresent.client.getInstructions()).toContain('- Tool "present":')
+    expect(withPresent.client.getInstructions()).toContain('Artifact Directory Path')
     expect(withPresent.lease.instructions).toContain('- Tool "present":')
+    expect(withPresent.lease.instructions).toContain('Artifact Directory Path')
 
     const withoutPresent = await setup('antigravity', ['file_read'], false)
     expect(withoutPresent.client.getInstructions()).not.toContain('- Tool "present":')
+    expect(withoutPresent.client.getInstructions()).not.toContain('Artifact Directory Path')
     expect(withoutPresent.lease.instructions).not.toContain('- Tool "present":')
+    expect(withoutPresent.lease.instructions).not.toContain('Artifact Directory Path')
 
     const nonAntigravity = await setup(undefined, ['present'], false)
     expect(nonAntigravity.client.getInstructions()).not.toContain('- Tool "present":')
