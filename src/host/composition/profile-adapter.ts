@@ -3879,11 +3879,15 @@ export class AcpProfileAdapter extends LlmAdapter {
             : (capabilities) =>
                 this.createMcpLease!(sessionId, capabilities, runtime, this.admittedToolSchemas.get(sessionId)),
         ),
-      createFileSystemHandlers: () =>
-        createAcpFileSystemHandlers({
-          profileId: this.profileId,
-          ...(appendFileAudit === undefined ? {} : { audit: appendFileAudit }),
-        }),
+      ...(runtime === 'antigravity'
+        ? {}
+        : {
+            createFileSystemHandlers: () =>
+              createAcpFileSystemHandlers({
+                profileId: this.profileId,
+                ...(appendFileAudit === undefined ? {} : { audit: appendFileAudit }),
+              }),
+          }),
       createTerminalHandlers: ({ cwd: launchCwd, env }) =>
         createAcpTerminalHandlers({
           subprocess: processSeam,

@@ -45,7 +45,7 @@ export function resolveAntigravityNativeTool(
   }
   if (call.kind === 'execute' || (input !== undefined && 'CommandLine' in input)) return 'bash'
   if (call.kind === 'read' || (input !== undefined && 'AbsolutePath' in input)) return 'read'
-  if (call.kind === 'edit' || (input !== undefined && ('TargetFile' in input || 'TargetContent' in input))) return 'edit'
+  if (call.kind === 'edit' || (input !== undefined && ('TargetFile' in input || 'TargetContent' in input || 'code_content' in input))) return 'edit'
   return undefined
 }
 
