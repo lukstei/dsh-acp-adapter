@@ -17,8 +17,9 @@ describe('antigravity MCP adapter and schema parsing', () => {
       expect(isAntigravityDuplicateTool('ask_user_question')).toBe(true)
       expect(isAntigravityDuplicateTool('terminal_bash')).toBe(true)
 
-      expect(isAntigravityDuplicateTool('glob')).toBe(false)
-      expect(isAntigravityDuplicateTool('ask_question')).toBe(false)
+      expect(isAntigravityDuplicateTool('glob')).toBe(true)
+      expect(isAntigravityDuplicateTool('grep')).toBe(true)
+      expect(isAntigravityDuplicateTool('ask_question')).toBe(true)
       expect(isAntigravityDuplicateTool('custom_tool')).toBe(false)
     })
   })
@@ -198,5 +199,26 @@ describe('antigravity MCP adapter and schema parsing', () => {
       )
       expect(normalized.rawOutput).toBeUndefined()
     })
+
+    it('preserves ask_question title from callTitle or rawInput questions', () => {
+      const fromCallTitle = normalizeAntigravityPresentation(
+        {},
+        undefined,
+        undefined,
+        'ask_question',
+        'Which weekdays do you usually work?',
+      )
+      expect(fromCallTitle.title).toBe('Which weekdays do you usually work?')
+
+      const fromRawInput = normalizeAntigravityPresentation(
+        { questions: [{ question: 'Do you want to proceed?', options: ['Yes', 'No'] }] },
+        undefined,
+        undefined,
+        'ask_question',
+        'ask_question',
+      )
+      expect(fromRawInput.title).toBe('Do you want to proceed?')
+    })
   })
 })
+

@@ -1459,19 +1459,16 @@ describe('session-owned native Teams MCP bridge', () => {
 
   it('instructs Antigravity to present review sidebar artifacts through the present tool', async () => {
     const withPresent = await setup('antigravity', ['present'], false)
-    expect(withPresent.client.getInstructions()).toContain(
-      'To display artifacts, plans, research, architectures, or reviews in the DSH review sidebar',
-    )
-    expect(withPresent.client.getInstructions()).toContain('call the DSH tool "present"')
-    expect(withPresent.lease.instructions).toContain('call the DSH tool "present"')
+    expect(withPresent.client.getInstructions()).toContain('- Tool "present":')
+    expect(withPresent.lease.instructions).toContain('- Tool "present":')
 
     const withoutPresent = await setup('antigravity', ['file_read'], false)
-    expect(withoutPresent.client.getInstructions()).not.toContain('call the DSH tool "present"')
-    expect(withoutPresent.lease.instructions).not.toContain('call the DSH tool "present"')
+    expect(withoutPresent.client.getInstructions()).not.toContain('- Tool "present":')
+    expect(withoutPresent.lease.instructions).not.toContain('- Tool "present":')
 
     const nonAntigravity = await setup(undefined, ['present'], false)
-    expect(nonAntigravity.client.getInstructions()).not.toContain('call the DSH tool "present"')
-    expect(nonAntigravity.lease.instructions).not.toContain('call the DSH tool "present"')
+    expect(nonAntigravity.client.getInstructions()).not.toContain('- Tool "present":')
+    expect(nonAntigravity.lease.instructions).not.toContain('- Tool "present":')
   })
 
   it('keeps correlated Codex MCP approvals manual when Ask is selected', async () => {
@@ -2213,7 +2210,7 @@ describe('session-owned native Teams MCP bridge', () => {
   })
 
   it('omits duplicate MCP tools, auto-approves native tools under auto policy, and normalizes presentation', async () => {
-    const { ctx, lease, server, tools, permission, client, execute } = await setup('antigravity', [
+    const { ctx, lease, server, tools, permission } = await setup('antigravity', [
       'read',
       'bash',
       'glob',
@@ -2223,6 +2220,7 @@ describe('session-owned native Teams MCP bridge', () => {
       'job_output',
       'job_kill',
       'ask_user_question',
+      'custom_search',
     ])
     lease.beginPrompt(new AbortController().signal)
 
@@ -2235,8 +2233,8 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(tools.map((tool) => tool.name)).not.toContain('job_output')
     expect(tools.map((tool) => tool.name)).not.toContain('job_kill')
     expect(tools.map((tool) => tool.name)).not.toContain('ask_user_question')
-    expect(tools.map((tool) => tool.name)).toContain('glob')
-    expect(tools.map((tool) => tool.name)).toContain('ask_question')
+    expect(tools.map((tool) => tool.name)).not.toContain('glob')
+    expect(tools.map((tool) => tool.name)).not.toContain('ask_question')
 
     // Native execute (run_command) with CommandLine
     const nativeBashCall: RequestPermissionRequest = {
@@ -2355,37 +2353,37 @@ describe('session-owned native Teams MCP bridge', () => {
       },
     })
 
-    // Preserved MCP tool: glob
-    const globName = tools.find((tool) => tool.name === 'glob')!.name
-    const mcpGlobCall: RequestPermissionRequest = {
+    // Preserved MCP tool: custom_search
+    const customName = tools.find((tool) => tool.name === 'custom_search')!.name
+    const mcpCustomCall: RequestPermissionRequest = {
       ...permission(),
       toolCall: {
-        toolCallId: 'agy-glob-1',
-        title: `${server.name}_${globName}`,
+        toolCallId: 'agy-custom-1',
+        title: `${server.name}_${customName}`,
         kind: 'other',
         _meta: {
-          mcp: { tool: globName, server: server.name },
+          mcp: { tool: customName, server: server.name },
           is_mcp_tool_call: true,
         },
       },
     }
-    expect(await lease.inspectPermission!(mcpGlobCall)).toMatchObject({
+    expect(await lease.inspectPermission!(mcpCustomCall)).toMatchObject({
       reason: 'auto-approved',
-      toolName: globName,
+      toolName: customName,
       identitySource: 'antigravity-meta',
       structuredIdentityPresent: true,
       titleMatchesCurrentTool: true,
     })
-    expect(await lease.permission(mcpGlobCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(await lease.permission(mcpCustomCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
 
     // Rejects foreign server in metadata
     const foreignCall: RequestPermissionRequest = {
       ...permission(),
       toolCall: {
         toolCallId: 'agy-foreign',
-        title: `dshteam_foreign_${globName}`,
+        title: `dshteam_foreign_${customName}`,
         _meta: {
-          mcp: { tool: globName, server: 'dshteam_foreign' },
+          mcp: { tool: customName, server: 'dshteam_foreign' },
           is_mcp_tool_call: true,
         },
       },
@@ -2397,24 +2395,18 @@ describe('session-owned native Teams MCP bridge', () => {
     // Resolves tool name for Antigravity form elicitation
     expect(
       lease.elicitationToolName!(
-        { mode: 'form', toolCallId: 'agy-glob-1' } as never,
-        mcpGlobCall.toolCall,
+        { mode: 'form', toolCallId: 'agy-custom-1' } as never,
+        mcpCustomCall.toolCall,
       ),
-    ).toBe(globName)
+    ).toBe(customName)
 
     // Normalizes extended tool kinds
     expect(
-      lease.presentTool!({ toolCallId: 'agy-glob', title: `${server.name}_glob`, kind: 'other' }),
+      lease.presentTool!({ toolCallId: 'agy-custom', title: `${server.name}_${customName}`, kind: 'other' }),
     ).toMatchObject({
-      name: 'glob',
-      title: 'glob',
-      kind: 'search',
-    })
-    expect(
-      lease.presentTool!({ toolCallId: 'agy-ask', title: `${server.name}_ask_question`, kind: 'other' }),
-    ).toMatchObject({
-      name: 'ask_question',
-      title: 'ask_question',
+      name: customName,
+      title: customName,
+      kind: 'other',
     })
     expect(
       lease.presentTool!({
@@ -2424,7 +2416,17 @@ describe('session-owned native Teams MCP bridge', () => {
       }),
     ).toMatchObject({
       name: 'ask_question',
-      title: 'ask_question',
+      title: 'Continue?',
+    })
+    expect(
+      lease.presentTool!({
+        toolCallId: 'agy-native-ask-title',
+        name: 'ask_question',
+        title: 'Which weekdays do you usually work?',
+      }),
+    ).toMatchObject({
+      name: 'ask_question',
+      title: 'Which weekdays do you usually work?',
     })
     expect(
       lease.presentTool!({
@@ -2452,40 +2454,6 @@ describe('session-owned native Teams MCP bridge', () => {
     })
     expect(lease.validatePermissionDecision!(nativeAskCall)).toBe(true)
 
-    // Verify calling bridged ask_question executes ask_user_question and formats answers
-    execute.mockResolvedValueOnce({
-      content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q1', selected: ['(Recommended) Yes'] }] }) }],
-      isError: false,
-    })
-    const askCallResult = await client.callTool({
-      name: 'ask_question',
-      arguments: {
-        questions: [
-          {
-            question: 'Proceed with changes?',
-            options: ['(Recommended) Yes', 'No'],
-            is_multi_select: false,
-          },
-        ],
-      },
-    })
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'ask_user_question',
-        arguments: {
-          questions: [
-            {
-              id: 'q1',
-              question: 'Proceed with changes?',
-              options: [{ label: '(Recommended) Yes' }, { label: 'No' }],
-              multi_select: false,
-            },
-          ],
-        },
-      }),
-    )
-    expect(askCallResult.content).toEqual([{ type: 'text', text: 'A1: (Recommended) Yes' }])
-
     // Verify teamBridgeKey stability for Antigravity wireProfile
     const agySchemas = [
       { name: 'ask_user_question', description: 'ask_user_question', parameters: { type: 'object' } },
@@ -2497,7 +2465,7 @@ describe('session-owned native Teams MCP bridge', () => {
   })
 
   it('keeps Antigravity Ask policy when configured', async () => {
-    const ask = await setup('antigravity', ['glob'], true, 'lead', async () => 'ask')
+    const ask = await setup('antigravity', ['custom_tool'], true, 'lead', async () => 'ask')
     ask.lease.beginPrompt(new AbortController().signal)
 
     // Native execute under Ask policy
@@ -2518,24 +2486,53 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(await ask.lease.permission(nativeBashAsk)).toBeUndefined()
 
     // MCP tool under Ask policy
-    const globName = ask.tools.find((tool) => tool.name === 'glob')!.name
-    const mcpGlobAsk: RequestPermissionRequest = {
+    const toolName = ask.tools.find((tool) => tool.name === 'custom_tool')!.name
+    const mcpToolAsk: RequestPermissionRequest = {
       ...ask.permission(),
       toolCall: {
-        toolCallId: 'agy-glob-ask',
-        title: `${ask.server.name}_${globName}`,
+        toolCallId: 'agy-custom-tool-ask',
+        title: `${ask.server.name}_${toolName}`,
         kind: 'other',
         _meta: {
-          mcp: { tool: globName, server: ask.server.name },
+          mcp: { tool: toolName, server: ask.server.name },
           is_mcp_tool_call: true,
         },
       },
     }
-    expect(await ask.lease.inspectPermission!(mcpGlobAsk)).toMatchObject({
+    expect(await ask.lease.inspectPermission!(mcpToolAsk)).toMatchObject({
       reason: 'approval-required',
-      toolName: globName,
+      toolName,
       identitySource: 'antigravity-meta',
     })
-    expect(await ask.lease.permission(mcpGlobAsk)).toBeUndefined()
+    expect(await ask.lease.permission(mcpToolAsk)).toBeUndefined()
+  })
+
+  it('inlines DSH tool schemas and routes through call_mcp_tool without disk inspection for Antigravity', async () => {
+    const fixture = await setup('antigravity', ['ask_user_question', 'custom_tool'], false)
+    const clientInstructions = fixture.client.getInstructions()
+    const leaseInstructions = fixture.lease.instructions
+
+    expect(clientInstructions).toContain('Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool')
+    expect(clientInstructions).toContain('You support batch function calling')
+    expect(clientInstructions).toContain('Antigravity native tools (invoke directly as native tools, never via call_mcp_tool)')
+    expect(clientInstructions).toContain('- client_create_file / client_edit_file: create/edit files')
+    expect(clientInstructions).not.toContain('client_edit_file / run_command')
+    expect(clientInstructions).toContain('Full schemas: For detailed documentation')
+    expect(clientInstructions).not.toContain("Never invoke Antigravity's native ask_question tool")
+    expect(clientInstructions).not.toContain('- Tool "ask_question":')
+    expect(clientInstructions).toContain('- Tool "custom_tool":')
+    expect(clientInstructions).not.toContain('Parameters: {')
+
+    expect(leaseInstructions).toContain(`Current DSH tools connection: MCP server ${fixture.server.name}`)
+    expect(leaseInstructions).toContain('Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool')
+    expect(leaseInstructions).toContain('You support batch function calling')
+    expect(leaseInstructions).toContain('Antigravity native tools (invoke directly as native tools, never via call_mcp_tool)')
+    expect(leaseInstructions).toContain('client_create_file')
+    expect(leaseInstructions).toContain('Full schemas: For detailed documentation')
+    expect(leaseInstructions).not.toContain('- Tool "ask_question":')
+    expect(leaseInstructions).toContain('- Tool "custom_tool":')
+    expect(leaseInstructions).not.toContain('Parameters: {')
+    expect(leaseInstructions).not.toContain('Each session has its own connection and caller identity')
   })
 })
+

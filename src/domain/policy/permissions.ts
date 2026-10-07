@@ -265,10 +265,12 @@ export function createAcpNativePermissionHandler(
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const allows = params.options.filter((option) => option.kind === 'allow_once')
     const reject = params.options.find((option) => option.kind === 'reject_once')
+    const input = recordValue(params.toolCall.rawInput)
     const isInteractive =
       params.toolCall.toolCallId.startsWith('interaction_') ||
       params.toolCall.name === 'ask_question' ||
       params.toolCall.title === 'ask_question' ||
+      (Array.isArray(input?.questions) && input.questions.length > 0) ||
       allows.length > 1
 
     if (deps.approval !== undefined && !isInteractive && allows.length === 1) {
@@ -305,15 +307,20 @@ export function createAcpNativePermissionHandler(
     const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
     try {
       const detail = isInteractive ? undefined : permissionQuestionDetail(params.toolCall, copy)
-      const questionTitle =
+      const inputQuestion =
+        Array.isArray(input?.questions) && typeof input.questions[0]?.question === 'string'
+          ? (input.questions[0].question as string).trim()
+          : undefined
+      const rawTitle =
         typeof params.toolCall.title === 'string' &&
         params.toolCall.title.trim() !== '' &&
         params.toolCall.title.trim() !== 'ask_question'
           ? params.toolCall.title.trim()
           : undefined
+      const questionTitle = rawTitle ?? (inputQuestion && inputQuestion.length > 0 ? inputQuestion : undefined)
       const question =
-        isInteractive && questionTitle !== undefined
-          ? questionTitle
+        isInteractive
+          ? (questionTitle ?? copy.questionPrompt)
           : buildPermissionReason(params, copy, { includeExecuteDetails: false })
       const answer = await deps.userQuestions.ask({
         agent,

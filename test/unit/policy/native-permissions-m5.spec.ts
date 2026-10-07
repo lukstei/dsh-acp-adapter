@@ -366,3 +366,105 @@ it('routes multi-choice questions with multiple allow_once options to native use
   })
 })
 
+it('falls back to rawInput question or questionPrompt when toolCall title is uninformative', async () => {
+  const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+    answers: [{ id: questions[0]!.id, selected: ['Option A'] }],
+  }))
+  const handler = createAcpNativePermissionHandler({
+    userQuestions: { ask },
+    getAgent: () => ({ id: 'live-agent' }),
+  })
+
+  // 1. Title is "ask_question", but rawInput has questions
+  await handler({
+    sessionId: 's1',
+    toolCall: {
+      toolCallId: 'interaction_1',
+      title: 'ask_question',
+      rawInput: { questions: [{ question: 'Which branch?', options: ['Option A', 'Option B'] }] },
+      kind: 'other',
+    },
+    options: [
+      option('1', 'Option A', 'allow_once'),
+      option('2', 'Option B', 'allow_once'),
+    ],
+  })
+  expect(ask).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      questions: [expect.objectContaining({ question: 'Which branch?' })],
+    }),
+  )
+
+  // 2. Both title and rawInput questions are absent -> fallback to questionPrompt
+  await handler({
+    sessionId: 's1',
+    toolCall: {
+      toolCallId: 'interaction_2',
+      title: 'ask_question',
+      rawInput: {},
+      kind: 'other',
+    },
+    options: [
+      option('1', 'Option A', 'allow_once'),
+      option('2', 'Option B', 'allow_once'),
+    ],
+  })
+  expect(ask).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      questions: [expect.objectContaining({ question: 'Please select an option:' })],
+    }),
+  )
+
+  // 3. Raw input question contains only whitespace -> fallback to questionPrompt
+  await handler({
+    sessionId: 's1',
+    toolCall: {
+      toolCallId: 'interaction_3',
+      title: 'ask_question',
+      rawInput: { questions: [{ question: '   ', options: ['Option A', 'Option B'] }] },
+      kind: 'other',
+    },
+    options: [
+      option('1', 'Option A', 'allow_once'),
+      option('2', 'Option B', 'allow_once'),
+    ],
+  })
+  expect(ask).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      questions: [expect.objectContaining({ question: 'Please select an option:' })],
+    }),
+  )
+})
+
+it('routes calls with questions array in rawInput to interactive questions even with single allow_once', async () => {
+  const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+    answers: [{ id: questions[0]!.id, selected: ['Option A'] }],
+  }))
+  const approvalRequest = vi.fn()
+  const handler = createAcpNativePermissionHandler({
+    userQuestions: { ask },
+    approval: { request: approvalRequest },
+    getAgent: () => ({ id: 'live-agent' }),
+  })
+
+  await handler({
+    sessionId: 's1',
+    toolCall: {
+      toolCallId: 'call_custom_id',
+      title: 'Which environment?',
+      rawInput: { questions: [{ question: 'Which environment?', options: ['Staging'] }] },
+      kind: 'other',
+    },
+    options: [
+      option('1', 'Staging', 'allow_once'),
+    ],
+  })
+  expect(approvalRequest).not.toHaveBeenCalled()
+  expect(ask).toHaveBeenCalledWith(
+    expect.objectContaining({
+      questions: [expect.objectContaining({ question: 'Which environment?' })],
+    }),
+  )
+})
+
+

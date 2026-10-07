@@ -34,8 +34,6 @@ import type {
 } from '../../contract/live-diagnostic-trace.ts'
 import { performance } from 'node:perf_hooks'
 import {
-  type BridgedToolDefinition,
-  createAntigravityAskQuestionDefinition,
   isAntigravityDuplicateTool,
   normalizeAntigravityPresentation,
   resolveAntigravityNativeTool,
@@ -52,21 +50,67 @@ const TEAM_TOOLS = [
   'team_task_get',
   'team_task_update',
 ] as const
+function formatCompactParameters(params: unknown): string {
+  if (typeof params !== 'object' || params === null) return ''
+  const record = params as { properties?: Record<string, { type?: string }>; required?: string[] }
+  const props = record.properties
+  if (!props || typeof props !== 'object') return ''
+  const required = new Set(Array.isArray(record.required) ? record.required : [])
+  const parts = Object.entries(props).map(([key, val]) => {
+    const isReq = required.has(key)
+    const type = typeof val?.type === 'string' ? val.type : 'any'
+    return `${key}${isReq ? '' : '?'}: ${type}`
+  })
+  return parts.length === 0 ? '' : `(${parts.join(', ')})`
+}
+
+function formatAntigravityToolSchemas(names: ReadonlyMap<string, ToolDefinition>): string {
+  if (names.size === 0) return '(no DSH tools listed)'
+  const lines: string[] = []
+  for (const [name, def] of names) {
+    const firstLine = (def.description ?? '').trim().split('\n')[0]?.trim() ?? ''
+    const sig = formatCompactParameters(def.parameters)
+    lines.push(`- Tool "${name}": ${sig ? `${sig} ` : ''}${firstLine}`)
+  }
+  return lines.join('\n')
+}
+
 function bridgeInstructions(
   names: ReadonlyMap<string, ToolDefinition>,
   hasTeams: boolean,
   wireProfile?: string,
+  serverName?: string,
 ): string {
+  if (wireProfile === 'antigravity') {
+    const targetServer = serverName ?? 'the DSH MCP server'
+    const toolSchemas = formatAntigravityToolSchemas(names)
+    const presentRoute = names.has('present')
+      ? ' To display artifacts, plans, research, architectures, or reviews in the DSH review sidebar, call the DSH tool "present" via call_mcp_tool with Arguments: { files: [{ path: "<path>", description?: "<desc>" }] }.'
+      : ''
+    return [
+      'You support batch function calling. When you need to execute multiple operations that are independent of each other, you SHOULD call multiple tools in parallel in a single turn. This is much more efficient than calling them sequentially.',
+      'Independent operations include: reading multiple files, running multiple searches, executing multiple independent commands, checking status of multiple resources. Do NOT batch operations if they depend on the output of a previous operation in the same batch.',
+      '',
+      'Antigravity native tools (invoke directly as native tools, never via call_mcp_tool):',
+      '- view_file: read files',
+      '- client_create_file / client_edit_file: create/edit files',
+      '- run_command: execute shell commands',
+      '- ask_question: ask user questions',
+      'Do not search configuration files or codebase for native tool definitions.',
+      '',
+      `Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool with ServerName: "${targetServer}", ToolName: "<name>", and Arguments.${presentRoute}`,
+      'Full schemas: For detailed documentation, nested options, and complete schemas of any MCP tool, use view_file on its schema file in the directory specified in <mcp_servers> above (~/.gemini/antigravity-acp/brain/<id>/mcp/<serverName>/<toolName>.json).',
+      '',
+      toolSchemas,
+    ].join('\n')
+  }
+
   const skillRoute = names.has('skill')
     ? 'The DSH MCP tool "skill" is listed; access DSH skill-catalog entries through that tool using its exact tools/list schema and names.'
     : names.has(RUN_CODE_NAME)
       ? `No direct DSH skill tool is listed. If DSH skill access is exposed through the generated SDK, call it inside "${RUN_CODE_NAME}" using the host-provided SDK instructions and listed schema; do not invent a direct skill tool.`
       : 'No DSH skill-loading entry point is listed. Do not claim DSH skill-catalog entries are available through an Agent-native skill tool; explain that this DSH connection has no listed skill entry point.'
-  const presentRoute =
-    names.has('present') && wireProfile === 'antigravity'
-      ? ' To display artifacts, plans, research, architectures, or reviews in the DSH review sidebar, call the DSH tool "present" with the file path and description. Writing markdown files to disk or mentioning them in text will not display them in the DSH review sidebar without calling "present".'
-      : ''
-  return `These are native DSH tools available to this session. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${presentRoute}${hasTeams ? ' Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.' : ''}`
+  return `These are native DSH tools available to this session. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.' : ''}`
 }
 const isTeamTool = (name: string): boolean => (TEAM_TOOLS as readonly string[]).includes(name)
 const diagnosticTools = new Set<string>(TEAM_TOOLS)
@@ -403,16 +447,6 @@ function bridgeDefinitions(
     const definition = tools.get(schema.name, agent)
     if (definition !== undefined) definitions.set(schema.name, definition)
   }
-  const dshAskUser = tools.get('ask_user_question', agent)
-  if (wireProfile === 'antigravity' && dshAskUser !== undefined) {
-    const askDef = createAntigravityAskQuestionDefinition(dshAskUser)
-    definitions.set(askDef.name, askDef)
-    visible.set(askDef.name, {
-      name: askDef.name,
-      description: askDef.description,
-      parameters: askDef.parameters as never,
-    })
-  }
   const currentSchemaKey = schemaValueKey([...definitions.keys()].map((name) => visible.get(name)!))
   return definitions.size === 0 ? undefined : { agent, tools, teams, hasTeams, definitions, visible, currentSchemaKey }
 }
@@ -547,7 +581,7 @@ export async function createTeamBridge(
   // The connection owns caller identity. Keep native tool names intact so
   // upstream prompts, descriptions and plugin instructions share one contract.
   const names = definitions
-  const scopedInstructions = bridgeInstructions(names, hasTeams, wireProfile)
+  const scopedInstructions = bridgeInstructions(names, hasTeams, wireProfile, serverName)
   const presented = new Map<string, string>()
   const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
   const plainRecord = (value: unknown): Record<string, unknown> | undefined => {
@@ -677,10 +711,8 @@ export async function createTeamBridge(
   // fail-closed in each permission resolver below.
   if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-    const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => {
-    const underlying = (definition as BridgedToolDefinition).underlyingName
-    return underlying !== undefined ? tools.get(underlying, agent) !== undefined : tools.get(name, agent) === definition
-  }
+    const isDefinitionLive = (name: string, definition: ToolDefinition): boolean =>
+    tools.get(name, agent) === definition
   const live = (): boolean =>
     !lifetime.signal.aborted &&
     agents.get(sessionId as never) === agent &&
@@ -1091,28 +1123,13 @@ export async function createTeamBridge(
           }
           let result: Awaited<ReturnType<typeof tools.execute>>
           try {
-            const bridged = definition as BridgedToolDefinition
-            if (bridged.executeBridged !== undefined) {
-              result = (await bridged.executeBridged(
-                (name, mappedArgs) =>
-                  tools.execute({
-                    callId: hostCallId as never,
-                    name,
-                    arguments: mappedArgs,
-                    agent,
-                    signal: bodySignal,
-                  }),
-                args,
-              )) as typeof result
-            } else {
-              result = await tools.execute({
-                callId: hostCallId as never,
-                name: definition.name,
-                arguments: args,
-                agent,
-                signal: bodySignal,
-              })
-            }
+            result = await tools.execute({
+              callId: hostCallId as never,
+              name: definition.name,
+              arguments: args,
+              agent,
+              signal: bodySignal,
+            })
             if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
               callRecord.abortedBeforeDispatch = true
             if (diagnosticEnabled && diagnosticBase !== undefined) {
@@ -1331,7 +1348,10 @@ export async function createTeamBridge(
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH tools connection: MCP server ${serverName}. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team. Create teams only when explicitly requested.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions:
+      wireProfile === 'antigravity'
+        ? `Current DSH tools connection: MCP server ${serverName}.\n\n${scopedInstructions}`
+        : `Current DSH tools connection: MCP server ${serverName}. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team. Create teams only when explicitly requested.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     ...(diagnosticLeaseId === undefined ? {} : { diagnosticLeaseId }),
     beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {
@@ -1494,7 +1514,7 @@ export async function createTeamBridge(
 
       let title = name
       if (wireProfile === 'antigravity') {
-        const normalized = normalizeAntigravityPresentation(rawInput, rawOutput, content, name)
+        const normalized = normalizeAntigravityPresentation(rawInput, rawOutput, content, name, call.title)
         rawInput = normalized.rawInput
         rawOutput = normalized.rawOutput
         content = normalized.content

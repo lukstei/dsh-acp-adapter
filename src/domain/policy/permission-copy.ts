@@ -18,6 +18,7 @@ const en = {
   agentOption: 'Agent option',
   option: (ordinal: number) => `option ${String(ordinal)}`,
   acpTool: 'ACP tool',
+  questionPrompt: 'Please select an option:',
 }
 
 const zh: typeof en = {
@@ -39,6 +40,7 @@ const zh: typeof en = {
   agentOption: 'Agent 选项',
   option: (ordinal) => `选项 ${String(ordinal)}`,
   acpTool: 'ACP 工具',
+  questionPrompt: '请选择一个选项：',
 }
 
 export type PermissionCopy = typeof en

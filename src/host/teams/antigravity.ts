@@ -1,5 +1,4 @@
 import type * as acp from '@agentclientprotocol/sdk'
-import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 
 export const ANTIGRAVITY_DUPLICATE_MCP_TOOLS = new Set([
   'bash',
@@ -15,6 +14,9 @@ export const ANTIGRAVITY_DUPLICATE_MCP_TOOLS = new Set([
   'job_output',
   'job_kill',
   'ask_user_question',
+  'ask_question',
+  'glob',
+  'grep',
 ])
 
 export function isAntigravityDuplicateTool(name: string): boolean {
@@ -143,59 +145,6 @@ export function formatAntigravityAskQuestionResult(result: unknown): string {
   return ''
 }
 
-export interface BridgedToolDefinition extends ToolDefinition {
-  readonly underlyingName?: string
-  executeBridged?(
-    executeHost: (name: string, args: unknown) => Promise<unknown>,
-    args: unknown,
-  ): Promise<unknown>
-}
-
-const askQuestionDefinitions = new WeakMap<ToolDefinition, BridgedToolDefinition>()
-
-export function createAntigravityAskQuestionDefinition(dshAskUser: ToolDefinition): BridgedToolDefinition {
-  let existing = askQuestionDefinitions.get(dshAskUser)
-  if (existing === undefined) {
-    existing = {
-      name: 'ask_question',
-      underlyingName: 'ask_user_question',
-      description: 'Use this tool to ask the user one or more multiple-choice questions.',
-      parameters: {
-        type: 'object',
-        required: ['questions'],
-        properties: {
-          questions: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['question', 'options'],
-              properties: {
-                question: { type: 'string' },
-                options: { type: 'array', items: { type: 'string' } },
-                is_multi_select: { type: 'boolean' },
-              },
-            },
-          },
-        },
-      },
-      output: dshAskUser.output,
-      execute: dshAskUser.execute,
-      async executeBridged(executeHost, args) {
-        const hostResult = (await executeHost('ask_user_question', {
-          questions: parseAntigravityQuestions(args),
-        })) as Record<string, unknown>
-        const text = formatAntigravityAskQuestionResult(hostResult)
-        return {
-          ...hostResult,
-          content: [{ type: 'text' as const, text }],
-        }
-      },
-    }
-    askQuestionDefinitions.set(dshAskUser, existing)
-  }
-  return existing
-}
-
 function firstString(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
   if (record === undefined) return undefined
   for (const key of keys) {
@@ -219,6 +168,7 @@ export function normalizeAntigravityPresentation(
   rawOutput: unknown,
   content: acp.ToolCallUpdate['content'],
   name: string,
+  callTitle?: string | null,
 ): {
   rawInput: unknown
   rawOutput: unknown
@@ -271,6 +221,15 @@ export function normalizeAntigravityPresentation(
       nextInput = { ...(input ?? {}), path, file_path: path }
     }
   } else if (name === 'ask_question') {
+    if (typeof callTitle === 'string' && callTitle.trim().length > 0 && callTitle.trim() !== 'ask_question') {
+      title = callTitle.trim()
+    } else if (input !== undefined) {
+      const questions = parseAntigravityQuestions(input)
+      const first = questions[0]
+      if (first !== undefined && first.question.trim().length > 0) {
+        title = first.question.trim()
+      }
+    }
     if (output !== undefined && (!Array.isArray(nextContent) || nextContent.length === 0)) {
       const formatted = formatAntigravityAskQuestionResult(output)
       if (formatted.length > 0) {
