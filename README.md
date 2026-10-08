@@ -48,15 +48,18 @@ Git 与压缩包安装示例：
 
 插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。Agent CLI 必须安装并登录在运行 DSH 的主机上。打开 **插件 → ACP adapter**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。以下 Agent 已做过实际接入测试：
 
-| Agent                      | ACP 命令           | 终端登录           |
-| -------------------------- | ------------------ | ------------------ |
-| Devin                      | `devin acp`        | `devin auth login` |
-| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`  | `codebuddy`        |
-| Claude                     | `claude-agent-acp` | `claude`           |
-| Codex                      | `codex-acp`        | `codex login`      |
-| Kimi                       | `kimi acp`         | `kimi login`       |
+| Agent                      | ACP 命令                  | 终端登录           |
+| -------------------------- | ------------------------- | ------------------ |
+| Devin                      | `devin acp`               | `devin auth login` |
+| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`         | `codebuddy`        |
+| Claude                     | `claude-agent-acp`        | `claude`           |
+| Codex                      | `codex-acp`               | `codex login`      |
+| Kimi                       | `kimi acp`                | `kimi login`       |
+| Antigravity（Gemini）      | `refined-antigravity-acp` | `agy auth login`   |
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
+>
+> Antigravity（Gemini）仅支持配合 [refined-antigravity-acp](https://github.com/simonepri/refined-antigravity-acp) 代理使用。官方原版 `agy_acp_server.par` 存在协议偏离与未处理的交互死锁（如长任务掉线、空轮次提早结束、`interaction_` 问题阻塞等），无法直接在 DSH 中稳定运行。
 
 各 Agent 的具体真实运行范围见 [E2E 验证记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md)。
 

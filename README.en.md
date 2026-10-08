@@ -46,15 +46,18 @@ This archive includes compiled output and matches the npm package. GitHub's auto
 
 The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install and sign in to the Agent CLI on the computer running DSH. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts. These Agents have completed real integration checks:
 
-| Agent                     | ACP command        | Terminal sign-in   |
-| ------------------------- | ------------------ | ------------------ |
-| Devin                     | `devin acp`        | `devin auth login` |
-| CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`  | `codebuddy`        |
-| Claude                    | `claude-agent-acp` | `claude`           |
-| Codex                     | `codex-acp`        | `codex login`      |
-| Kimi                      | `kimi acp`         | `kimi login`       |
+| Agent                     | ACP command               | Terminal sign-in   |
+| ------------------------- | ------------------------- | ------------------ |
+| Devin                     | `devin acp`               | `devin auth login` |
+| CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`         | `codebuddy`        |
+| Claude                    | `claude-agent-acp`        | `claude`           |
+| Codex                     | `codex-acp`               | `codex login`      |
+| Kimi                      | `kimi acp`                | `kimi login`       |
+| Antigravity (Gemini)      | `refined-antigravity-acp` | `agy auth login`   |
 
 > CodeBuddy CLI and the WorkBuddy desktop app share account credits, with no separate subscription required. Connect DSH through the CodeBuddy CLI. See [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing) and the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference).
+>
+> Antigravity (Gemini) only works with the [refined-antigravity-acp](https://github.com/simonepri/refined-antigravity-acp) proxy wrapper. Direct upstream `agy_acp_server.par` suffers from protocol divergence and unhandled interaction deadlocks (e.g. connection drops on long tasks, empty turn timeouts, and unhandled interaction prompts).
 
 For test coverage and results, see the [E2E verification record](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md).
 

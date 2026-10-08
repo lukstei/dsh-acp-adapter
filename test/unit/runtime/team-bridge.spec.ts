@@ -2324,7 +2324,8 @@ describe('session-owned native Teams MCP bridge', () => {
     // Spurious retryable provider error string is dropped
     const retryErrorRead = lease.presentTool!({
       ...nativeReadCall.toolCall,
-      rawOutput: 'Encountered retryable error from model provider: Agent execution terminated due to error. ("Error 503...")',
+      rawOutput:
+        'Encountered retryable error from model provider: Agent execution terminated due to error. ("Error 503...")',
     })
     expect(retryErrorRead.rawOutput).toBeUndefined()
 
@@ -2398,10 +2399,7 @@ describe('session-owned native Teams MCP bridge', () => {
 
     // Resolves tool name for Antigravity form elicitation
     expect(
-      lease.elicitationToolName!(
-        { mode: 'form', toolCallId: 'agy-custom-1' } as never,
-        mcpCustomCall.toolCall,
-      ),
+      lease.elicitationToolName!({ mode: 'form', toolCallId: 'agy-custom-1' } as never, mcpCustomCall.toolCall),
     ).toBe(customName)
 
     // Normalizes extended tool kinds
@@ -2516,11 +2514,17 @@ describe('session-owned native Teams MCP bridge', () => {
     const clientInstructions = fixture.client.getInstructions()
     const leaseInstructions = fixture.lease.instructions
 
-    expect(clientInstructions).toContain('Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool')
+    expect(clientInstructions).toContain(
+      'Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool',
+    )
     expect(clientInstructions).toContain('You support batch function calling')
-    expect(clientInstructions).toContain('Antigravity native tools (invoke directly as native tools, never via call_mcp_tool)')
+    expect(clientInstructions).toContain(
+      'Antigravity native tools (invoke directly as native tools, never via call_mcp_tool)',
+    )
     expect(clientInstructions).toContain('- client_create_file / client_edit_file: create or replace whole files')
-    expect(clientInstructions).toContain('- run_command: execute shell commands (use shell commands to update files partially)')
+    expect(clientInstructions).toContain(
+      '- run_command: execute shell commands (use shell commands to update files partially)',
+    )
     expect(clientInstructions).not.toContain('write_to_file')
     expect(clientInstructions).not.toContain('replace_file_content')
     expect(clientInstructions).toContain('Full schemas: For detailed documentation')
@@ -2530,9 +2534,13 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(clientInstructions).not.toContain('Parameters: {')
 
     expect(leaseInstructions).toContain(`Current DSH tools connection: MCP server ${fixture.server.name}`)
-    expect(leaseInstructions).toContain('Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool')
+    expect(leaseInstructions).toContain(
+      'Host DSH MCP tools: For the host DSH tools listed below, always invoke them via call_mcp_tool',
+    )
     expect(leaseInstructions).toContain('You support batch function calling')
-    expect(leaseInstructions).toContain('Antigravity native tools (invoke directly as native tools, never via call_mcp_tool)')
+    expect(leaseInstructions).toContain(
+      'Antigravity native tools (invoke directly as native tools, never via call_mcp_tool)',
+    )
     expect(leaseInstructions).toContain('client_create_file / client_edit_file')
     expect(leaseInstructions).toContain('use shell commands to update files partially')
     expect(leaseInstructions).not.toContain('write_to_file')
@@ -2543,4 +2551,3 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(leaseInstructions).not.toContain('Each session has its own connection and caller identity')
   })
 })
-
