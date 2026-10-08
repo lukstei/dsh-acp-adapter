@@ -2358,6 +2358,54 @@ describe('session-owned native Teams MCP bridge', () => {
       },
     })
 
+    // Native fetch (read_url_content)
+    const nativeFetchCall: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-native-fetch-1',
+        title: 'Run read_url_content?',
+        kind: 'fetch',
+        rawInput: { Url: 'https://example.com' },
+      },
+    }
+    expect(await lease.inspectPermission!(nativeFetchCall)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: 'web_fetch',
+      identitySource: 'name',
+      structuredIdentityPresent: true,
+      titleMatchesCurrentTool: true,
+    })
+    expect(await lease.permission(nativeFetchCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    const presentedFetch = lease.presentTool!(nativeFetchCall.toolCall)
+    expect(presentedFetch).toMatchObject({
+      name: 'web_fetch',
+      kind: 'fetch',
+    })
+
+    // Native search (search_web)
+    const nativeSearchCall: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-native-search-1',
+        title: 'Run search_web?',
+        kind: 'search',
+        rawInput: { query: 'query' },
+      },
+    }
+    expect(await lease.inspectPermission!(nativeSearchCall)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: 'web_search',
+      identitySource: 'name',
+      structuredIdentityPresent: true,
+      titleMatchesCurrentTool: true,
+    })
+    expect(await lease.permission(nativeSearchCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    const presentedSearch = lease.presentTool!(nativeSearchCall.toolCall)
+    expect(presentedSearch).toMatchObject({
+      name: 'web_search',
+      kind: 'fetch',
+    })
+
     // Preserved MCP tool: custom_search
     const customName = tools.find((tool) => tool.name === 'custom_search')!.name
     const mcpCustomCall: RequestPermissionRequest = {

@@ -29,51 +29,68 @@ export function toPlainRecord(value: unknown): Record<string, unknown> | undefin
     : undefined
 }
 
-export type AntigravityNativeToolName = 'bash' | 'read' | 'edit' | 'ask_question'
+export type AntigravityNativeToolName =
+  | 'bash'
+  | 'read'
+  | 'edit'
+  | 'ask_question'
+  | 'web_fetch'
+  | 'web_search'
 
 export function resolveAntigravityNativeTool(
-  call: Pick<acp.ToolCallUpdate, 'kind' | 'name' | 'title' | 'rawInput'> & { toolCallId?: string },
+  call: Pick<acp.ToolCallUpdate, 'kind' | 'name' | 'title'> & { toolCallId?: string },
 ): AntigravityNativeToolName | undefined {
-  const input = toPlainRecord(call.rawInput)
+  // agy_acp_server.par omits call.name on session/request_permission and formats non-exec titles as "Run <tool>?"
+  const titleName =
+    typeof call.title === 'string'
+      ? /^Run\s+([a-zA-Z0-9_]+)\?$/.exec(call.title)?.[1] ?? call.title
+      : undefined
+  const toolName = call.name ?? titleName
+
   if (
-    call.name === 'ask_question' ||
-    call.title === 'ask_question' ||
-    call.toolCallId?.startsWith('interaction_') ||
-    (input !== undefined && 'questions' in input)
+    toolName === 'ask_question' ||
+    call.toolCallId?.startsWith('interaction_')
   ) {
     return 'ask_question'
   }
   if (
-    call.kind === 'execute' ||
-    call.name === 'run_command' ||
-    (input !== undefined && ('CommandLine' in input || 'command' in input || 'command_line' in input))
+    toolName === 'run_command' ||
+    toolName === 'bash' ||
+    call.kind === 'execute'
   ) {
     return 'bash'
   }
   if (
-    call.kind === 'read' ||
-    call.name === 'view_file' ||
-    call.name === 'client_view_file' ||
-    (input !== undefined &&
-      ('AbsolutePath' in input || 'absolute_path' in input || 'path' in input || 'file_path' in input))
+    toolName === 'view_file' ||
+    toolName === 'client_view_file' ||
+    toolName === 'read' ||
+    call.kind === 'read'
   ) {
     return 'read'
   }
   if (
-    call.kind === 'edit' ||
-    call.name === 'client_create_file' ||
-    call.name === 'client_edit_file' ||
-    call.name === 'write_to_file' ||
-    call.name === 'replace_file_content' ||
-    (input !== undefined &&
-      ('TargetFile' in input ||
-        'target_file' in input ||
-        'FilePath' in input ||
-        'TargetContent' in input ||
-        'code_content' in input ||
-        'CodeContent' in input))
+    toolName === 'client_create_file' ||
+    toolName === 'client_edit_file' ||
+    toolName === 'write_to_file' ||
+    toolName === 'replace_file_content' ||
+    toolName === 'edit' ||
+    call.kind === 'edit'
   ) {
     return 'edit'
+  }
+  if (
+    toolName === 'read_url_content' ||
+    toolName === 'web_fetch' ||
+    call.kind === 'fetch'
+  ) {
+    return 'web_fetch'
+  }
+  if (
+    toolName === 'search_web' ||
+    toolName === 'web_search' ||
+    call.kind === 'search'
+  ) {
+    return 'web_search'
   }
   return undefined
 }

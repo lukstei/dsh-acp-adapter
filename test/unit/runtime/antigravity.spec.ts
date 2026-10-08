@@ -25,32 +25,33 @@ describe('antigravity MCP adapter and schema parsing', () => {
   })
 
   describe('native tool resolution', () => {
-    it('resolves tool names from kind, name, title, or structured input', () => {
+    it('resolves tool names from kind, name, title, or toolCallId', () => {
       expect(resolveAntigravityNativeTool({ kind: 'execute' })).toBe('bash')
       expect(resolveAntigravityNativeTool({ name: 'run_command' })).toBe('bash')
-      expect(resolveAntigravityNativeTool({ rawInput: { CommandLine: 'echo 1' } })).toBe('bash')
 
       expect(resolveAntigravityNativeTool({ kind: 'read' })).toBe('read')
       expect(resolveAntigravityNativeTool({ name: 'view_file' })).toBe('read')
       expect(resolveAntigravityNativeTool({ name: 'client_view_file' })).toBe('read')
-      expect(resolveAntigravityNativeTool({ rawInput: { AbsolutePath: '/a/b.ts' } })).toBe('read')
-      expect(resolveAntigravityNativeTool({ rawInput: { absolute_path: '/a/b.ts' } })).toBe('read')
 
       expect(resolveAntigravityNativeTool({ kind: 'edit' })).toBe('edit')
       expect(resolveAntigravityNativeTool({ name: 'client_create_file' })).toBe('edit')
       expect(resolveAntigravityNativeTool({ name: 'client_edit_file' })).toBe('edit')
       expect(resolveAntigravityNativeTool({ name: 'write_to_file' })).toBe('edit')
       expect(resolveAntigravityNativeTool({ name: 'replace_file_content' })).toBe('edit')
-      expect(resolveAntigravityNativeTool({ rawInput: { TargetFile: '/a/b.ts' } })).toBe('edit')
-      expect(resolveAntigravityNativeTool({ rawInput: { target_file: '/a/b.ts' } })).toBe('edit')
-      expect(resolveAntigravityNativeTool({ rawInput: { FilePath: '/a/b.ts' } })).toBe('edit')
-      expect(resolveAntigravityNativeTool({ rawInput: { TargetContent: 'code' } })).toBe('edit')
-      expect(resolveAntigravityNativeTool({ rawInput: { CodeContent: 'code' } })).toBe('edit')
 
       expect(resolveAntigravityNativeTool({ name: 'ask_question' })).toBe('ask_question')
       expect(resolveAntigravityNativeTool({ title: 'ask_question' })).toBe('ask_question')
       expect(resolveAntigravityNativeTool({ toolCallId: 'interaction_aba27307' })).toBe('ask_question')
-      expect(resolveAntigravityNativeTool({ rawInput: { questions: [] } })).toBe('ask_question')
+
+      expect(resolveAntigravityNativeTool({ kind: 'fetch' })).toBe('web_fetch')
+      expect(resolveAntigravityNativeTool({ name: 'read_url_content' })).toBe('web_fetch')
+      expect(resolveAntigravityNativeTool({ title: 'Run read_url_content?' })).toBe('web_fetch')
+      expect(resolveAntigravityNativeTool({ name: 'web_fetch' })).toBe('web_fetch')
+
+      expect(resolveAntigravityNativeTool({ kind: 'search' })).toBe('web_search')
+      expect(resolveAntigravityNativeTool({ name: 'search_web' })).toBe('web_search')
+      expect(resolveAntigravityNativeTool({ title: 'Run search_web?' })).toBe('web_search')
+      expect(resolveAntigravityNativeTool({ name: 'web_search' })).toBe('web_search')
 
       expect(resolveAntigravityNativeTool({ kind: 'other', title: 'random' })).toBeUndefined()
     })
