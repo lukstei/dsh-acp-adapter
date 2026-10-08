@@ -27,14 +27,25 @@ describe('antigravity MCP adapter and schema parsing', () => {
   describe('native tool resolution', () => {
     it('resolves tool names from kind, name, title, or structured input', () => {
       expect(resolveAntigravityNativeTool({ kind: 'execute' })).toBe('bash')
+      expect(resolveAntigravityNativeTool({ name: 'run_command' })).toBe('bash')
       expect(resolveAntigravityNativeTool({ rawInput: { CommandLine: 'echo 1' } })).toBe('bash')
 
       expect(resolveAntigravityNativeTool({ kind: 'read' })).toBe('read')
+      expect(resolveAntigravityNativeTool({ name: 'view_file' })).toBe('read')
+      expect(resolveAntigravityNativeTool({ name: 'client_view_file' })).toBe('read')
       expect(resolveAntigravityNativeTool({ rawInput: { AbsolutePath: '/a/b.ts' } })).toBe('read')
+      expect(resolveAntigravityNativeTool({ rawInput: { absolute_path: '/a/b.ts' } })).toBe('read')
 
       expect(resolveAntigravityNativeTool({ kind: 'edit' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'client_create_file' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'client_edit_file' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'write_to_file' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'replace_file_content' })).toBe('edit')
       expect(resolveAntigravityNativeTool({ rawInput: { TargetFile: '/a/b.ts' } })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ rawInput: { target_file: '/a/b.ts' } })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ rawInput: { FilePath: '/a/b.ts' } })).toBe('edit')
       expect(resolveAntigravityNativeTool({ rawInput: { TargetContent: 'code' } })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ rawInput: { CodeContent: 'code' } })).toBe('edit')
 
       expect(resolveAntigravityNativeTool({ name: 'ask_question' })).toBe('ask_question')
       expect(resolveAntigravityNativeTool({ title: 'ask_question' })).toBe('ask_question')
@@ -91,10 +102,7 @@ describe('antigravity MCP adapter and schema parsing', () => {
   describe('formatAntigravityAskQuestionResult', () => {
     it('formats direct answers payload', () => {
       const formatted = formatAntigravityAskQuestionResult({
-        answers: [
-          { selected: ['Option 1'] },
-          { selected: ['Option 2'], custom: 'Custom text' },
-        ],
+        answers: [{ selected: ['Option 1'] }, { selected: ['Option 2'], custom: 'Custom text' }],
       })
       expect(formatted).toBe('A1: Option 1\nA2: Option 2, Custom text')
     })
@@ -147,18 +155,11 @@ describe('antigravity MCP adapter and schema parsing', () => {
         exitCode: 0,
         exit_code: 0,
       })
-      expect(normalized.content).toEqual([
-        { type: 'content', content: { type: 'text', text: 'Clean\n' } },
-      ])
+      expect(normalized.content).toEqual([{ type: 'content', content: { type: 'text', text: 'Clean\n' } }])
     })
 
     it('extracts command title from output when input command is absent', () => {
-      const normalized = normalizeAntigravityPresentation(
-        {},
-        { commandLine: 'pnpm test' },
-        undefined,
-        'bash',
-      )
+      const normalized = normalizeAntigravityPresentation({}, { commandLine: 'pnpm test' }, undefined, 'bash')
       expect(normalized.title).toBe('pnpm test')
     })
 
@@ -187,6 +188,18 @@ describe('antigravity MCP adapter and schema parsing', () => {
         CodeContent: 'new content',
         path: '/path/file.ts',
         file_path: '/path/file.ts',
+      })
+
+      const filePathNormalized = normalizeAntigravityPresentation(
+        { FilePath: '/path/file2.ts' },
+        undefined,
+        undefined,
+        'edit',
+      )
+      expect(filePathNormalized.rawInput).toEqual({
+        FilePath: '/path/file2.ts',
+        path: '/path/file2.ts',
+        file_path: '/path/file2.ts',
       })
     })
 
@@ -221,4 +234,3 @@ describe('antigravity MCP adapter and schema parsing', () => {
     })
   })
 })
-

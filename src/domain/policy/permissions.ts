@@ -132,8 +132,9 @@ function permissionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: 
         'absolutePath',
         'TargetFile',
         'targetFile',
-      ]) ??
-      tool.locations?.find((location) => typeof location.path === 'string')?.path
+        'target_file',
+        'FilePath',
+      ]) ?? tool.locations?.find((location) => typeof location.path === 'string')?.path
     return path === undefined ? undefined : `${copy.target}: ${safeText(path, 160)}`
   }
   if (tool.rawInput === undefined) return undefined
@@ -318,10 +319,9 @@ export function createAcpNativePermissionHandler(
           ? params.toolCall.title.trim()
           : undefined
       const questionTitle = rawTitle ?? (inputQuestion && inputQuestion.length > 0 ? inputQuestion : undefined)
-      const question =
-        isInteractive
-          ? (questionTitle ?? copy.questionPrompt)
-          : buildPermissionReason(params, copy, { includeExecuteDetails: false })
+      const question = isInteractive
+        ? (questionTitle ?? copy.questionPrompt)
+        : buildPermissionReason(params, copy, { includeExecuteDetails: false })
       const answer = await deps.userQuestions.ask({
         agent,
         questions: [

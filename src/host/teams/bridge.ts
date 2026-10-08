@@ -53,14 +53,11 @@ const TEAM_TOOLS = [
 function formatCompactParameters(params: unknown): string {
   if (typeof params !== 'object' || params === null) return ''
   const record = params as { properties?: Record<string, { type?: string }>; required?: string[] }
-  const props = record.properties
-  if (!props || typeof props !== 'object') return ''
+  if (!record.properties || typeof record.properties !== 'object') return ''
   const required = new Set(Array.isArray(record.required) ? record.required : [])
-  const parts = Object.entries(props).map(([key, val]) => {
-    const isReq = required.has(key)
-    const type = typeof val?.type === 'string' ? val.type : 'any'
-    return `${key}${isReq ? '' : '?'}: ${type}`
-  })
+  const parts = Object.entries(record.properties).map(
+    ([key, val]) => `${key}${required.has(key) ? '' : '?'}: ${typeof val?.type === 'string' ? val.type : 'any'}`,
+  )
   return parts.length === 0 ? '' : `(${parts.join(', ')})`
 }
 
@@ -644,10 +641,7 @@ export async function createTeamBridge(
     if (call._meta?.['cognition.ai/toolName'] != null)
       candidates.push({ tool: qualified(call._meta['cognition.ai/toolName']), source: 'devin-meta' })
     const antigravityMeta = call._meta?.mcp as { server?: unknown; tool?: unknown } | undefined
-    if (
-      (wireProfile === 'antigravity' || call._meta?.is_mcp_tool_call === true) &&
-      antigravityMeta !== undefined
-    ) {
+    if ((wireProfile === 'antigravity' || call._meta?.is_mcp_tool_call === true) && antigravityMeta !== undefined) {
       candidates.push({
         tool:
           antigravityMeta.server === serverName && typeof antigravityMeta.tool === 'string'
@@ -658,11 +652,7 @@ export async function createTeamBridge(
     }
     if (typeof call.name === 'string' && call.name.startsWith('mcp__'))
       candidates.push({ tool: qualified(call.name), source: 'name' })
-    if (
-      wireProfile === 'antigravity' &&
-      typeof call.name === 'string' &&
-      call.name.startsWith(`${serverName}_`)
-    ) {
+    if (wireProfile === 'antigravity' && typeof call.name === 'string' && call.name.startsWith(`${serverName}_`)) {
       candidates.push({ tool: call.name.slice(serverName.length + 1), source: 'name' })
     }
     // Only runtime-specific, complete labels identify a server. A bare native
@@ -717,8 +707,7 @@ export async function createTeamBridge(
   // fail-closed in each permission resolver below.
   if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-    const isDefinitionLive = (name: string, definition: ToolDefinition): boolean =>
-    tools.get(name, agent) === definition
+  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => tools.get(name, agent) === definition
   const live = (): boolean =>
     !lifetime.signal.aborted &&
     agents.get(sessionId as never) === agent &&

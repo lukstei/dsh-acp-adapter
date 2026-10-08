@@ -43,9 +43,38 @@ export function resolveAntigravityNativeTool(
   ) {
     return 'ask_question'
   }
-  if (call.kind === 'execute' || (input !== undefined && 'CommandLine' in input)) return 'bash'
-  if (call.kind === 'read' || (input !== undefined && 'AbsolutePath' in input)) return 'read'
-  if (call.kind === 'edit' || (input !== undefined && ('TargetFile' in input || 'TargetContent' in input || 'code_content' in input))) return 'edit'
+  if (
+    call.kind === 'execute' ||
+    call.name === 'run_command' ||
+    (input !== undefined && ('CommandLine' in input || 'command' in input || 'command_line' in input))
+  ) {
+    return 'bash'
+  }
+  if (
+    call.kind === 'read' ||
+    call.name === 'view_file' ||
+    call.name === 'client_view_file' ||
+    (input !== undefined &&
+      ('AbsolutePath' in input || 'absolute_path' in input || 'path' in input || 'file_path' in input))
+  ) {
+    return 'read'
+  }
+  if (
+    call.kind === 'edit' ||
+    call.name === 'client_create_file' ||
+    call.name === 'client_edit_file' ||
+    call.name === 'write_to_file' ||
+    call.name === 'replace_file_content' ||
+    (input !== undefined &&
+      ('TargetFile' in input ||
+        'target_file' in input ||
+        'FilePath' in input ||
+        'TargetContent' in input ||
+        'code_content' in input ||
+        'CodeContent' in input))
+  ) {
+    return 'edit'
+  }
   return undefined
 }
 
@@ -76,11 +105,7 @@ export function parseAntigravityQuestions(args: unknown): DshQuestionItem[] {
         return { label: String(optRec?.label ?? opt) }
       })
     }
-    const multi_select =
-      q.is_multi_select === true ||
-      q.IsMultiSelect === true ||
-      q.multi_select === true ||
-      q.multiSelect === true
+    const multi_select = Boolean(q.is_multi_select ?? q.IsMultiSelect ?? q.multi_select ?? q.multiSelect)
     return {
       id,
       question,
@@ -106,43 +131,38 @@ function formatAnswers(answers: unknown): string | undefined {
 
 export function formatAntigravityAskQuestionResult(result: unknown): string {
   if (result == null) return ''
-  if (typeof result === 'string') {
-    try {
-      const parsed = JSON.parse(result)
-      const formatted = formatAnswers(toPlainRecord(parsed)?.answers)
-      if (formatted !== undefined) return formatted
-    } catch {
-      return result
-    }
-    return result
-  }
-  if (typeof result !== 'object') return String(result)
-
   const directFormatted = formatAnswers(toPlainRecord(result)?.answers)
   if (directFormatted !== undefined) return directFormatted
 
-  const record = result as Record<string, unknown>
-  if (Array.isArray(record.content)) {
-    const textBlocks = record.content
-      .filter(
-        (block): block is { type: 'text'; text: string } =>
-          typeof block === 'object' && block !== null && block.type === 'text' && typeof block.text === 'string',
-      )
-      .map((block) => block.text)
-    const first = textBlocks[0]
-    if (first !== undefined) {
-      try {
-        const parsed = JSON.parse(first)
-        const formatted = formatAnswers(toPlainRecord(parsed)?.answers)
-        if (formatted !== undefined) return formatted
-      } catch {
-        return textBlocks.join('\n')
-      }
-      return textBlocks.join('\n')
+  let text: string | undefined
+  if (typeof result === 'string') {
+    text = result
+  } else if (typeof result === 'object') {
+    const record = result as Record<string, unknown>
+    if (Array.isArray(record.content)) {
+      const textBlocks = record.content
+        .filter(
+          (block): block is { type: 'text'; text: string } =>
+            typeof block === 'object' && block !== null && block.type === 'text' && typeof block.text === 'string',
+        )
+        .map((block) => block.text)
+      text = textBlocks[0] ?? (record.text as string | undefined)
+    } else if (typeof record.text === 'string') {
+      text = record.text
     }
   }
-  if (typeof record.text === 'string') return record.text
-  return ''
+
+  if (text !== undefined) {
+    try {
+      const parsed = JSON.parse(text)
+      const formatted = formatAnswers(toPlainRecord(parsed)?.answers)
+      if (formatted !== undefined) return formatted
+    } catch {
+      return text
+    }
+    return text
+  }
+  return String(result)
 }
 
 function firstString(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
@@ -216,7 +236,7 @@ export function normalizeAntigravityPresentation(
       nextInput = { ...(input ?? {}), path, file_path: path }
     }
   } else if (name === 'edit') {
-    const path = firstString(input, ['path', 'file_path', 'TargetFile', 'target_file'])
+    const path = firstString(input, ['path', 'file_path', 'TargetFile', 'target_file', 'FilePath'])
     if (path !== undefined) {
       nextInput = { ...(input ?? {}), path, file_path: path }
     }

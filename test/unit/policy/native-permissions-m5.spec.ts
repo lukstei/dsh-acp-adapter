@@ -141,6 +141,34 @@ describe('native ACP permission bridge', () => {
     expect(reason).not.toContain('Command details were not provided')
   })
 
+  it('extracts file path details from target_file and FilePath properties', async () => {
+    for (const [key, path] of [
+      ['target_file', '/workspace/src/foo.ts'],
+      ['FilePath', '/workspace/src/bar.ts'],
+    ] as const) {
+      const { handler, ask } = bridge('Allow once')
+      await handler({
+        ...params([]),
+        toolCall: {
+          ...params([]).toolCall,
+          kind: 'edit',
+          title: 'edit_file',
+          rawInput: { [key]: path },
+        },
+        options: [option('once', 'Allow once', 'allow_once'), option('reject', 'Reject', 'reject_once')],
+      })
+      expect(ask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          questions: [
+            expect.objectContaining({
+              question: expect.stringContaining(`Target: ${path}`),
+            }),
+          ],
+        }),
+      )
+    }
+  })
+
   it('preserves exact Agent option ids and all four kinds through native questions', async () => {
     for (const [kind, id] of [
       ['allow_once', 'a1'],
@@ -348,7 +376,11 @@ it('routes multi-choice questions with multiple allow_once options to native use
       kind: 'other',
     },
     options: [
-      option('1', '(Recommended) Split into three separate PRs with dedicated branches and commit scopes', 'allow_once'),
+      option(
+        '1',
+        '(Recommended) Split into three separate PRs with dedicated branches and commit scopes',
+        'allow_once',
+      ),
       option('2', 'Submit as a single combined pull request', 'allow_once'),
     ],
   })
@@ -384,10 +416,7 @@ it('falls back to rawInput question or questionPrompt when toolCall title is uni
       rawInput: { questions: [{ question: 'Which branch?', options: ['Option A', 'Option B'] }] },
       kind: 'other',
     },
-    options: [
-      option('1', 'Option A', 'allow_once'),
-      option('2', 'Option B', 'allow_once'),
-    ],
+    options: [option('1', 'Option A', 'allow_once'), option('2', 'Option B', 'allow_once')],
   })
   expect(ask).toHaveBeenLastCalledWith(
     expect.objectContaining({
@@ -404,10 +433,7 @@ it('falls back to rawInput question or questionPrompt when toolCall title is uni
       rawInput: {},
       kind: 'other',
     },
-    options: [
-      option('1', 'Option A', 'allow_once'),
-      option('2', 'Option B', 'allow_once'),
-    ],
+    options: [option('1', 'Option A', 'allow_once'), option('2', 'Option B', 'allow_once')],
   })
   expect(ask).toHaveBeenLastCalledWith(
     expect.objectContaining({
@@ -424,10 +450,7 @@ it('falls back to rawInput question or questionPrompt when toolCall title is uni
       rawInput: { questions: [{ question: '   ', options: ['Option A', 'Option B'] }] },
       kind: 'other',
     },
-    options: [
-      option('1', 'Option A', 'allow_once'),
-      option('2', 'Option B', 'allow_once'),
-    ],
+    options: [option('1', 'Option A', 'allow_once'), option('2', 'Option B', 'allow_once')],
   })
   expect(ask).toHaveBeenLastCalledWith(
     expect.objectContaining({
@@ -455,9 +478,7 @@ it('routes calls with questions array in rawInput to interactive questions even 
       rawInput: { questions: [{ question: 'Which environment?', options: ['Staging'] }] },
       kind: 'other',
     },
-    options: [
-      option('1', 'Staging', 'allow_once'),
-    ],
+    options: [option('1', 'Staging', 'allow_once')],
   })
   expect(approvalRequest).not.toHaveBeenCalled()
   expect(ask).toHaveBeenCalledWith(
@@ -466,5 +487,3 @@ it('routes calls with questions array in rawInput to interactive questions even 
     }),
   )
 })
-
-
