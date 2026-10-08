@@ -459,7 +459,7 @@ it('falls back to rawInput question or questionPrompt when toolCall title is uni
   )
 })
 
-it('routes calls with questions array in rawInput to interactive questions even with single allow_once', async () => {
+it('routes ask_question calls to interactive questions even with single allow_once', async () => {
   const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
     answers: [{ id: questions[0]!.id, selected: ['Option A'] }],
   }))
@@ -473,7 +473,8 @@ it('routes calls with questions array in rawInput to interactive questions even 
   await handler({
     sessionId: 's1',
     toolCall: {
-      toolCallId: 'call_custom_id',
+      toolCallId: 'interaction_custom_id',
+      name: 'ask_question',
       title: 'Which environment?',
       rawInput: { questions: [{ question: 'Which environment?', options: ['Staging'] }] },
       kind: 'other',

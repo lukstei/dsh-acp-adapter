@@ -271,7 +271,7 @@ export function createAcpNativePermissionHandler(
       params.toolCall.toolCallId.startsWith('interaction_') ||
       params.toolCall.name === 'ask_question' ||
       params.toolCall.title === 'ask_question' ||
-      (Array.isArray(input?.questions) && input.questions.length > 0) ||
+      params.toolCall.title === 'Run ask_question?' ||
       allows.length > 1
 
     if (deps.approval !== undefined && !isInteractive && allows.length === 1) {
@@ -315,7 +315,8 @@ export function createAcpNativePermissionHandler(
       const rawTitle =
         typeof params.toolCall.title === 'string' &&
         params.toolCall.title.trim() !== '' &&
-        params.toolCall.title.trim() !== 'ask_question'
+        params.toolCall.title.trim() !== 'ask_question' &&
+        params.toolCall.title.trim() !== 'Run ask_question?'
           ? params.toolCall.title.trim()
           : undefined
       const questionTitle = rawTitle ?? (inputQuestion && inputQuestion.length > 0 ? inputQuestion : undefined)
