@@ -48,7 +48,7 @@ const registryAgents = (registryJson as { readonly agents: readonly RegistryAgen
 const executableEntries = (executablesJson as { readonly entries: { readonly [id: string]: ExecutableEntry } }).entries
 
 /** Display guidance absent from the registry, not launch configuration. */
-const LOGIN_HINTS: Readonly<Record<AcpAgentId, string>> = {
+const LOGIN_HINTS: Readonly<Partial<Record<AcpAgentId, string>>> = {
   devin: 'devin auth login',
   codex: 'codex login',
   kimi: 'kimi login',
@@ -64,7 +64,14 @@ const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = { devin: 'de
 /** Curated adapter regression/live-smoke coverage, not certification of registry versions.
  * Keep this explicit: adding a runtime binding does not establish verification.
  */
-const VERIFIED_ADAPTER_IDS: readonly string[] = ['devin', 'codebuddy-code', 'codex-acp', 'kimi', 'claude-acp']
+const VERIFIED_ADAPTER_IDS: readonly string[] = [
+  'devin',
+  'codebuddy-code',
+  'codex-acp',
+  'kimi',
+  'claude-acp',
+  'antigravity-acp',
+]
 
 // ---------- catalog 合成 ----------
 
@@ -137,7 +144,9 @@ export function buildCatalogEntries(
       args: [...args],
       env: { ...executable?.env },
       requiresCommand: command === '',
-      ...(runtime === undefined ? {} : { runtime, loginHint: LOGIN_HINTS[runtime] }),
+      ...(runtime === undefined
+        ? {}
+        : { runtime, ...(LOGIN_HINTS[runtime] === undefined ? {} : { loginHint: LOGIN_HINTS[runtime] }) }),
     })
   }
   entries.sort((left, right) => {

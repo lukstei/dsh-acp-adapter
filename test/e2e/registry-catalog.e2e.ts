@@ -23,18 +23,36 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const addButton = detail.getByRole('button', { name: 'Add agent', exact: true })
     await addButton.click()
     const menu = page.getByRole('menu')
-    await menu.getByText('Verified adapters · 5', { exact: true }).waitFor()
+    await menu.getByText('Verified adapters · 6', { exact: true }).waitFor()
     await menu.getByText(/^Catalog entries · Unverified ·/).waitFor()
     expect(await detail.getByRole('textbox').count()).toBe(0)
     expect(await menu.getByRole('textbox').count()).toBe(0)
     const items = await menu.getByRole('menuitem').allTextContents()
-    expect(items.slice(0, 5).map((text) => text.split(' · ')[0])).toEqual([
+    expect(items.slice(0, 6).map((text) => text.split(' · ')[0])).toEqual([
       'Devin',
       'Codebuddy Code',
       'Codex',
       'Kimi CLI',
       'Claude Agent',
+      'Google Antigravity',
     ])
+    await menu.getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ }).waitFor()
+    const initialViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
+    await expect
+      .poll(async () => {
+        const bounds = await menu.boundingBox()
+        const trigger = await addButton.boundingBox()
+        return (
+          bounds !== null &&
+          trigger !== null &&
+          Math.abs(bounds.width - trigger.width) < 1 &&
+          bounds.x >= 12 &&
+          bounds.x + bounds.width <= initialViewport.width - 12 &&
+          bounds.y >= 12 &&
+          bounds.y + bounds.height <= initialViewport.height - 12
+        )
+      })
+      .toBe(true)
     const evidence = join(root, '.local/plugin-panel-v2')
     mkdirSync(evidence, { recursive: true })
     const observedSides = new Set<'top' | 'bottom'>()
@@ -102,6 +120,68 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
         animations: 'disabled',
       })
     }
+    await page.keyboard.press('Escape')
+    await menu.waitFor({ state: 'hidden' })
+    await addButton.click()
+    await menu.waitFor({ state: 'visible' })
+    await expect
+      .poll(async () => {
+        const bounds = await menu.boundingBox()
+        const trigger = await addButton.boundingBox()
+        return (
+          bounds !== null &&
+          trigger !== null &&
+          Math.abs(bounds.width - trigger.width) < 1 &&
+          bounds.x >= 12 &&
+          bounds.x + bounds.width <= 408 &&
+          bounds.y >= 12 &&
+          bounds.y + bounds.height <= 488
+        )
+      })
+      .toBe(true)
+    const beforeMove = {
+      anchor: required(await addButton.boundingBox()),
+      menu: required(await menu.boundingBox()),
+    }
+    const menuOpensAbove = beforeMove.menu.y + beforeMove.menu.height <= beforeMove.anchor.y
+    const anchorGapBefore = menuOpensAbove
+      ? beforeMove.anchor.y - beforeMove.menu.y - beforeMove.menu.height
+      : beforeMove.menu.y - beforeMove.anchor.y - beforeMove.anchor.height
+    await addButton.evaluate((element) => {
+      element.style.transform = 'translateY(12px)'
+    })
+    await expect
+      .poll(async () => {
+        const anchor = await addButton.boundingBox()
+        const bounds = await menu.boundingBox()
+        return (
+          anchor !== null &&
+          bounds !== null &&
+          Math.abs(anchor.y - beforeMove.anchor.y - 12) < 1 &&
+          Math.abs(
+            (menuOpensAbove ? anchor.y - bounds.y - bounds.height : bounds.y - anchor.y - anchor.height) -
+              anchorGapBefore,
+          ) < 1
+        )
+      })
+      .toBe(true)
+    await addButton.evaluate((element) => element.style.removeProperty('transform'))
+    await expect
+      .poll(async () => {
+        const anchor = await addButton.boundingBox()
+        const bounds = await menu.boundingBox()
+        return (
+          anchor !== null &&
+          bounds !== null &&
+          Math.abs(anchor.y - beforeMove.anchor.y) < 1 &&
+          Math.abs(
+            (menuOpensAbove ? anchor.y - bounds.y - bounds.height : bounds.y - anchor.y - anchor.height) -
+              anchorGapBefore,
+          ) < 1
+        )
+      })
+      .toBe(true)
+    expect(errors).toEqual([])
     await addButton.evaluate((element) => element.scrollIntoView({ block: 'end' }))
     await expect
       .poll(async () => {
@@ -184,7 +264,11 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.getByRole('button', { name: '关闭', exact: true }).click()
     detail = await openAcpPluginDetail(page, 'zh')
     await detail.getByRole('button', { name: '添加 agent', exact: true }).click()
-    await page.getByRole('menu').getByText('已验证适配 · 5', { exact: true }).waitFor()
+    await page.getByRole('menu').getByText('已验证适配 · 6', { exact: true }).waitFor()
+    await page
+      .getByRole('menu')
+      .getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ })
+      .waitFor()
     await page
       .getByRole('menu')
       .getByText(/^目录收录 · 未验证 ·/)

@@ -7,6 +7,14 @@
  */
 
 const zh = {
+  acpQuestionSubmit: '提交选择',
+  acpQuestionSubmitting: '提交中',
+  acpQuestionCancel: '取消请求',
+  acpQuestionUnavailable: '问题已不能回答',
+  acpQuestionFailed: '提交失败，请重试',
+  acpQuestionCopy: '复制',
+  acpQuestionCopied: '已复制',
+  acpQuestionFootnotes: '脚注',
   auditSummaryPermissionBridge: '工具桥审批判断',
   auditAutoApproved: '已自动批准 DSH 工具请求',
   auditBridgeUnavailable: '没有工具桥连接',
@@ -370,7 +378,6 @@ const zh = {
   'subagent.observedTiming': '目录耗时是 DSH 观察到的委派时间，不代表模型或 Agent 自报耗时。',
   crossBackendTitle: '需要新建会话',
   crossBackendDescription: '当前会话将保持不变，新的后端将在新 DSH 会话中运行。',
-  crossBackendHistory: '当前 DSH 对话会完整保留。',
   crossBackendCancel: '取消',
   crossBackendContinue: '继续',
   crossBackendWorking: '处理中…',
@@ -390,6 +397,14 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  acpQuestionSubmit: 'Submit',
+  acpQuestionSubmitting: 'Sending…',
+  acpQuestionCancel: 'Cancel',
+  acpQuestionUnavailable: 'This question is no longer available',
+  acpQuestionFailed: 'Could not submit; try again',
+  acpQuestionCopy: 'Copy',
+  acpQuestionCopied: 'Copied',
+  acpQuestionFootnotes: 'Footnotes',
   auditSummaryPermissionBridge: 'Tool bridge permission check',
   auditAutoApproved: 'DSH tool request approved automatically',
   auditBridgeUnavailable: 'No tool bridge connection',
@@ -772,7 +787,6 @@ const en: Record<AcpLocaleKey, string> = {
     'Catalog duration is the delegation wall time observed by DSH, not model or Agent-reported time.',
   crossBackendTitle: 'New session required',
   crossBackendDescription: 'The current session will stay unchanged; the new backend will run in a new DSH session.',
-  crossBackendHistory: 'The current DSH conversation will be kept unchanged.',
   crossBackendCancel: 'Cancel',
   crossBackendContinue: 'Continue',
   crossBackendWorking: 'Working…',
