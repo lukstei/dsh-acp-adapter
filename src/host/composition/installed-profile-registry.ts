@@ -466,40 +466,41 @@ export function installInstalledProfileRegistry(
     // Lead whose authoritative roster still contains this exact child id.
     if (header.origin === 'subagent' && membership === undefined) {
       const parentId = header.parentSession
-      if (parentId === undefined || teams === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      const parentSession = sessionStore?.get(parentId)
-      let leadAgent = ctx.get('agents', false)?.get(parentId as never)
-      if (leadAgent === undefined && parentSession !== undefined && parentSession.header.origin !== 'subagent') {
-        const activated = await ctx.get('sessionController', false)?.resolveAgent(parentId as never)
-        if (activated !== undefined && 'error' in activated) throw activated.error
-        leadAgent = ctx.get('agents', false)?.get(parentId as never)
+      if (parentId === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      if (teams !== undefined) {
+        const parentSession = sessionStore?.get(parentId)
+        let leadAgent = ctx.get('agents', false)?.get(parentId as never)
+        if (leadAgent === undefined && parentSession !== undefined && parentSession.header.origin !== 'subagent') {
+          const activated = await ctx.get('sessionController', false)?.resolveAgent(parentId as never)
+          if (activated !== undefined && 'error' in activated) throw activated.error
+          leadAgent = ctx.get('agents', false)?.get(parentId as never)
+        }
+        if (leadAgent === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+        const leadMembership = teams.tryMembership(leadAgent)
+        if (leadMembership !== undefined && leadMembership.role === 'lead' && leadMembership.root === leadAgent) {
+          if (!teams.listMembers(leadAgent).some((row) => row.id === sessionId && row.role === 'teammate')) {
+            throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+          }
+          const policy = await sidecar.readToolApprovalPolicy(leadAgent.id as never, config.toolApprovalDefault.get())
+          if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
+          const currentLead = teams.tryMembership(leadAgent)
+          if (
+            ctx.get('agents', false)?.get(leadAgent.id as never) !== leadAgent ||
+            currentLead === undefined ||
+            currentLead.role !== 'lead' ||
+            currentLead.root !== leadAgent ||
+            currentLead.id !== leadMembership.id ||
+            !teams.listMembers(leadAgent).some((row) => row.id === sessionId && row.role === 'teammate')
+          ) {
+            throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
+          }
+          return { sessionId, policy, source: 'lead', editable: false }
+        }
       }
-      if (leadAgent === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      const leadMembership = teams.tryMembership(leadAgent)
-      if (
-        leadMembership?.role !== 'lead' ||
-        leadMembership.root !== leadAgent ||
-        !teams.listMembers(leadAgent).some((row) => row.id === sessionId && row.role === 'teammate')
-      ) {
-        throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      }
-      const policy = await sidecar.readToolApprovalPolicy(leadAgent.id as never, config.toolApprovalDefault.get())
-      if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
-      const currentLead = teams.tryMembership(leadAgent)
-      if (
-        ctx.get('agents', false)?.get(leadAgent.id as never) !== leadAgent ||
-        currentLead?.role !== 'lead' ||
-        currentLead.root !== leadAgent ||
-        currentLead.id !== leadMembership.id ||
-        !teams.listMembers(leadAgent).some((row) => row.id === sessionId && row.role === 'teammate')
-      ) {
-        throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
-      }
-      return { sessionId, policy, source: 'lead', editable: false }
     }
     let policySessionId = sessionId
     let source: 'session' | 'lead' = 'session'
-    if (header.origin !== 'subagent' && membership?.role !== 'teammate' && header.parentSession !== undefined) {
+    if ((membership === undefined || membership.role !== 'teammate') && header.parentSession !== undefined) {
       const savedForkPolicy = await sidecar.readToolApprovalPolicy(sessionId as never)
       if (savedForkPolicy !== undefined)
         return { sessionId, policy: savedForkPolicy, source: 'session', editable: true }
