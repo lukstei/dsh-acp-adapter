@@ -796,6 +796,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     AcpProfileRuntime,
     { readonly sessionId?: string; readonly key: string }
   >()
+  private readonly deliveredHostInstructions = new WeakMap<AcpProfileRuntime, string>()
 
   constructor(
     readonly profileId: string,
@@ -2165,6 +2166,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         let qwenPromptOptions: AcpPromptOptions = {}
         let qwenContextKey: string | undefined
         let qwenContextWillBeDelivered = true
+        let promptSystem: string | undefined
         // Capability negotiation is deliberately before session/new, restore,
         // WAL, or prompt. Invalid/unsupported input therefore cannot create an
         // ACP session or a durable dispatch record.
@@ -2181,8 +2183,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           persistedRecovery = await durableSidecar.readRecoveryState(sessionKey as never)
           forceBlank = persistedRecovery?.lastUserAction === 'rebind-blank'
           const modelContextSnapshots = session?.currentModelContextSnapshots?.()
+          promptSystem = hostSystemPrompt(options)
+          const deliveredSystem = forceBlank ? undefined : self.deliveredHostInstructions.get(runtime)
           const promptOptions = {
-            system: hostSystemPrompt(options),
+            ...(deliveredSystem === promptSystem ? {} : { system: promptSystem }),
             ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
             ...(forceBlank ? { reboundAgentInstructions: options.messages } : {}),
             skillRoute: skillRouteForTools(options.tools),
@@ -2199,7 +2203,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           validatedPrompt = prompt
           const snapshots = modelContextSnapshots ?? currentModelContextSnapshots(messages)
           qwenContextKey = acpCanonicalHash16({
-            system: promptOptions.system,
+            system: promptSystem,
             skillRoute: promptOptions.skillRoute,
             snapshots: snapshots.map(({ source, text }) => ({ source, text })),
           })
@@ -3214,14 +3218,17 @@ export class AcpProfileAdapter extends LlmAdapter {
         handoff.resume = async (nextOptions) => {
           let nextProof: CurrentStepProof | undefined
           let nextPrompt: acp.ContentBlock[]
+          let nextSystem: string | undefined
           try {
             const nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
               nextProof = proof
             })
             if (nextProof?.turn !== admissionProof?.turn) return false
             const modelContextSnapshots = session?.currentModelContextSnapshots?.()
+            nextSystem = hostSystemPrompt(nextOptions)
+            const deliveredSystem = self.deliveredHostInstructions.get(runtime)
             nextPrompt = await toAcpPrompt(nextMessages, {
-              system: hostSystemPrompt(nextOptions),
+              ...(deliveredSystem === nextSystem ? {} : { system: nextSystem }),
               ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
               skillRoute: skillRouteForTools(nextOptions.tools),
               imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
@@ -3257,6 +3264,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // attempt settles. Do not certify its original context as current.
             self.deliveredQwenContexts.delete(runtime)
             qwenContextKey = undefined
+            promptSystem = nextSystem
             remoteCancellationHook = captureRemoteCancellationHook(nextProof)
             currentAnchor = nextProof!.anchorMessageId
             // A pending pull may contain the old segment's final text. It will
@@ -3381,6 +3389,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
           else if (response.stopReason !== 'end_turn' || promptSignal.aborted)
             self.deliveredQwenContexts.delete(runtime)
+          if (response.stopReason === 'end_turn' && !promptSignal.aborted && promptSystem !== undefined)
+            self.deliveredHostInstructions.set(runtime, promptSystem)
+          else if (response.stopReason !== 'end_turn' || promptSignal.aborted)
+            self.deliveredHostInstructions.delete(runtime)
           if (response.stopReason === 'cancelled') self.markConfirmedUserModeForRestore(sessionKey, runtime)
           const confirmedRemoteCancellation =
             response.stopReason === 'cancelled' &&
@@ -3696,6 +3708,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         const prompting = promptResult.then(handlePromptResponse, async (error: unknown) => {
           remoteSettled = true
           self.deliveredQwenContexts.delete(runtime)
+          self.deliveredHostInstructions.delete(runtime)
           stopWatchingInput?.()
           stopWatchingDirectory?.()
           const settlementFailure = error instanceof AcpHostSettlementError ? error : undefined
