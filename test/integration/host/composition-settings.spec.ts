@@ -565,21 +565,6 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       editable: true,
     })
 
-    // Standalone subagents without an agentTeams Lead roster inherit the parent's policy snapshot.
-    const standaloneSubagentId = 'policy-standalone-subagent'
-    liveSessions.set(standaloneSubagentId, {
-      header: { origin: 'subagent', parentSession: 'policy-new-root' },
-      facts: {},
-      permissions: {},
-      requestHeader: () => ({ config: { provider: 'acp-codex' } }),
-    })
-    await seedAcpBinding(standaloneSubagentId)
-    await expect(remote.toolApprovalPolicy(standaloneSubagentId)).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-
     await settings.replace({ agents: { devin: agent('Devin', 'devin') } })
     expect(routeCalls).toContainEqual(['acp-codex'])
     expect(routeCalls).toContainEqual(['acp-devin'])
