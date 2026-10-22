@@ -307,6 +307,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       beginPrompt() {},
       endPrompt() {},
       async close() {},
+      permission: () => undefined,
       inspectPermission: () => ({ reason: 'identity-unmatched' }),
     }
     const runtime = createRuntime(
