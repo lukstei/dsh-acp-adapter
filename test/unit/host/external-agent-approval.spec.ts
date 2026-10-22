@@ -36,8 +36,10 @@ it.each(['allowed-once', 'rejected'] as const)(
   async (outcome) => {
     const f = await fixture()
     const audit: AcpPermissionAuditRecord[] = []
-    const answers = vi.fn(async (request: { agent: Agent }) => {
+    const answers = vi.fn(async (request: { agent: Agent; toolArgs?: unknown; commandLine?: string }) => {
       expect(request.agent).toBe(f.agent)
+      expect(request.toolArgs).toEqual({ command: 'test-command' })
+      expect(request.commandLine).toBe('test-command')
       expect(audit.map((record) => record.data.phase)).toEqual(['asked'])
       return outcome
     })
