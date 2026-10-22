@@ -308,7 +308,19 @@ function binaryApprovalOptions(options: readonly acp.PermissionOption[]):
   | undefined {
   const allows = options.filter((option) => option.kind === 'allow_once')
   const rejects = options.filter((option) => option.kind === 'reject_once')
-  if (allows.length !== 1 || rejects.length > 1 || options.length !== allows.length + rejects.length) return undefined
+  const persistentAllows = options.filter((option) => option.kind === 'allow_always')
+  if (
+    allows.length !== 1 ||
+    rejects.length > 1 ||
+    persistentAllows.length > 1 ||
+    options.length !== allows.length + rejects.length + persistentAllows.length
+  ) {
+    return undefined
+  }
+  // edge case: allow_always accompanies single-use approval on standard tool gates; require reject to distinguish from scope-selection questions
+  if (persistentAllows.length > 0 && rejects.length === 0) {
+    return undefined
+  }
   const names = options.map((option) => visibleCommand(option.name).trim())
   if (names.some((name) => name === '') || new Set(names).size !== names.length) return undefined
   return { allow: allows[0]!, ...(rejects[0] === undefined ? {} : { reject: rejects[0] }) }

@@ -68,6 +68,23 @@ describe('complete ACP permission choices', () => {
     expect(ask).not.toHaveBeenCalled()
   })
 
+  it('routes standard tool requests with allow_always to native approval when reject is available', async () => {
+    const approval = { request: vi.fn<AcpNativeApprovalService['request']>(async () => 'allowed-once') }
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
+    const handler = createAcpNativePermissionHandler({ approval, userQuestions: { ask }, getAgent: () => ({}) })
+    expect(
+      await handler(
+        request([
+          option('always', 'Allow Always', 'allow_always'),
+          option('once', 'Allow', 'allow_once'),
+          option('deny', 'Deny', 'reject_once'),
+        ]),
+      ),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
+    expect(approval.request).toHaveBeenCalledTimes(1)
+    expect(ask).not.toHaveBeenCalled()
+  })
+
   it.each([
     {
       name: 'once and persistent grants',
