@@ -687,8 +687,14 @@ export async function createTeamBridge(
   // Freeze a durable session default before the first prompt. Failure stays
   // fail-closed in each permission resolver below.
   if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
+  const isPromptActive = (): boolean => prompt !== undefined && !prompt.aborted
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => tools.get(name, agent) === definition
+  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => {
+    const current = tools.get(name, agent)
+    if (current === undefined) return false
+    if (current === definition) return true
+    return isPromptActive() && schemaValueKey([current]) === schemaValueKey([definition])
+  }
   const live = (): boolean =>
     !lifetime.signal.aborted &&
     agents.get(sessionId as never) === agent &&
@@ -737,10 +743,13 @@ export async function createTeamBridge(
         source === 'antigravity-meta',
       titleMatchesCurrentTool: titleName !== undefined && names.has(titleName),
     }
+    if (identity.tool === undefined && !facts.titleMatchesCurrentTool) {
+      return { ...facts, reason: 'identity-unmatched' }
+    }
+    const definition = definitionOf(call)
     if (!live()) return { ...facts, reason: 'inactive-connection' }
     if (capturedPrompt === undefined || capturedPrompt.aborted) return { ...facts, reason: 'inactive-prompt' }
-    const definition = definitionOf(call)
-    if (definition === undefined) {
+    if (definition === undefined || !isDefinitionLive(definition.name, definition)) {
       // An identified call to our own server with an unknown name cannot
       // execute, even after approval. Do not ask a user to repair a protocol
       // error, and never strip markup or guess arguments to make it runnable.
@@ -1363,6 +1372,7 @@ export async function createTeamBridge(
       promptGeneration++
       adapterPromptOrdinal = undefined
       presented.clear()
+      if (!live()) void lease.close()
     },
     async drainPrompt() {
       const pending = [...drainingPrompts]
@@ -1640,6 +1650,7 @@ export async function createTeamBridge(
   }
   listeners.push(
     ctx.on('tools/change', () => {
+      if (isPromptActive()) return
       if (!live()) void lease.close()
     }),
   )
@@ -1650,7 +1661,8 @@ export async function createTeamBridge(
   )
   listeners.push(
     ctx.on('internal/service', (name) => {
-      if (['agentTeams', 'agents', 'tools'].includes(name) && !live()) void lease.close()
+      if (!['agentTeams', 'agents', 'tools'].includes(name) || isPromptActive()) return
+      if (!live()) void lease.close()
     }),
   )
   return lease
