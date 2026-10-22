@@ -1355,6 +1355,46 @@ describe('session-owned native Teams MCP bridge', () => {
     await expect(client.callTool({ name })).rejects.toThrow()
   })
 
+  it('does not close an active lease on tools/change or internal/service during a running prompt, and preserves identity-unmatched for native tools when inactive', async () => {
+    const { lease, listeners, permission } = await setup(undefined, ['present'], false)
+    const promptController = new AbortController()
+    lease.beginPrompt(promptController.signal)
+    listeners.get('tools/change')!()
+    listeners.get('internal/service')!('tools')
+    expect(lease.signal.aborted).toBe(false)
+
+    await lease.close()
+    expect(lease.signal.aborted).toBe(true)
+
+    const nativeBashCall = {
+      ...permission('present'),
+      toolCall: {
+        toolCallId: 'bash-1',
+        name: 'bash',
+        rawInput: { command: 'git status' },
+      },
+    }
+    expect(await lease.inspectPermission!(nativeBashCall)).toMatchObject({ reason: 'identity-unmatched' })
+  })
+
+  it('survives mid-prompt tool definition reloads across HMR and closes the lease after the prompt ends', async () => {
+    const { client, definitions, lease, listeners, permission } = await setup(undefined, ['present', 'edit'], false)
+    const promptController = new AbortController()
+    lease.beginPrompt(promptController.signal)
+
+    // Simulate HMR re-instantiating the tool definition with the same schema
+    const currentEdit = definitions.get('edit')!
+    definitions.set('edit', { ...currentEdit })
+    listeners.get('tools/change')!()
+
+    expect(await lease.inspectPermission!(permission('present'))).toMatchObject({ reason: 'auto-approved' })
+    await expect(client.callTool({ name: 'present', arguments: { files: [] } })).resolves.toBeDefined()
+    expect(lease.signal.aborted).toBe(false)
+
+    lease.endPrompt()
+    expect(lease.signal.aborted).toBe(true)
+  })
+
   it('does not expose global tools hidden from this agent or team tools to non-members', async () => {
     const { ctx, definitions, hidden, services } = await setup(undefined, ['present', 'spawn_teammate'], false)
     hidden.add('present')

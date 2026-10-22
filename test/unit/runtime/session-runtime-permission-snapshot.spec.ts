@@ -297,6 +297,31 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'approval-required' })
   })
 
+  it('allows native user approval when the MCP lease is aborted for identity-unmatched tools', async () => {
+    let nativeRequests = 0
+    const leaseAbort = new AbortController()
+    leaseAbort.abort()
+    const lease: AcpMcpLease = {
+      signal: leaseAbort.signal,
+      servers: [],
+      beginPrompt() {},
+      endPrompt() {},
+      async close() {},
+      inspectPermission: () => ({ reason: 'identity-unmatched' }),
+    }
+    const runtime = createRuntime(
+      async () => {
+        nativeRequests++
+        return { outcome: { outcome: 'selected', optionId: 'allow' } }
+      },
+      'raw-input',
+      'in_progress',
+      lease,
+    )
+    await runtime.prompt(PROMPT, () => undefined)
+    expect(nativeRequests).toBe(1)
+  })
+
   it('checks wire identity before presenting a normalized native approval without changing arguments', async () => {
     const checked: acp.ToolCallUpdate[] = [],
       shown: acp.ToolCallUpdate[] = []

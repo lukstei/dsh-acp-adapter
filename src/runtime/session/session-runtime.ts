@@ -2111,8 +2111,7 @@ export class AcpSessionRuntime {
     }
     if (
       isAborted(signal) ||
-      lease !== this.mcpLease ||
-      lease?.signal.aborted ||
+      (inspected?.reason !== 'identity-unmatched' && (lease !== this.mcpLease || lease?.signal.aborted)) ||
       (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)
     )
       return cancelled()
