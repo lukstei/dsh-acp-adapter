@@ -27,6 +27,8 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
           ...(request.reason === undefined ? {} : { reason: request.reason }),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
           ...(request.callId === undefined ? {} : { callId: request.callId as ToolCallId }),
+          ...(request.toolArgs === undefined ? {} : { toolArgs: request.toolArgs }),
+          ...(request.commandLine === undefined ? {} : { commandLine: request.commandLine }),
         })
         return request.signal?.aborted || getAgent() !== agent ? 'cancelled' : result
       }
@@ -45,6 +47,8 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
                 ...(request.callId === undefined ? {} : { callId: request.callId as ToolCallId }),
                 ...(request.reason === undefined ? {} : { reason: request.reason }),
                 ...(signal === undefined ? {} : { signal }),
+                ...(request.toolArgs === undefined ? {} : { toolArgs: request.toolArgs }),
+                ...(request.commandLine === undefined ? {} : { commandLine: request.commandLine }),
               },
               async () => 'unavailable',
             )
