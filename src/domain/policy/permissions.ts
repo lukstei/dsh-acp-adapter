@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
+import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '../../contract/permission-policy.ts'
 import { isAntigravityInteractionCall } from './antigravity-question.ts'
 import type {
   AcpNativeQuestionUnavailable,
@@ -49,14 +50,21 @@ export interface AcpPermissionAuditChannel {
   append(record: AcpPermissionAuditRecord): Promise<void>
 }
 export type AcpNativeQuestionProfile = 'antigravity'
+/** The Host boundary validates the live Agent before entering the public policy service. */
+export interface AcpExternalPermissionPolicyRequest extends Omit<AcpExternalPolicyRequest, 'agent'> {
+  readonly agent: unknown
+}
 export interface AcpNativeApprovalService {
+  evaluateExternal?(request: AcpExternalPermissionPolicyRequest): Promise<AcpExternalPolicyDecision>
   request(req: {
     readonly agent: unknown
     readonly toolName: string
     readonly callId?: unknown
     readonly reason?: string
     readonly signal?: AbortSignal
-    readonly toolArgs?: Record<string, unknown>
+    /** Tool input at the approval boundary, after runtime normalization; absent when not supplied here. */
+    readonly toolArgs?: unknown
+    /** Recognized string command from execute input at this boundary; absent for other or unrecognized inputs. */
     readonly commandLine?: string
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
@@ -66,6 +74,8 @@ export interface AcpNativePermissionBridgeDeps {
   readonly permissionQuestions?: AcpPermissionQuestionService
   readonly approval?: AcpNativeApprovalService
   readonly nativeQuestionProfile?: AcpNativeQuestionProfile
+  /** Resolved by the adapter runtime, never from Agent-supplied metadata. */
+  readonly permissionProfile?: string
   readonly getAgent: () => unknown
   readonly locale?: string
   readonly log?: (message: string) => void
@@ -200,7 +210,11 @@ function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], 
     .join('\n')
 }
 /** Keep targets and unknown scope visible; verified Team task prose stays in raw-request details. */
-function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
+function permissionQuestionFacts(
+  tool: acp.RequestPermissionRequest['toolCall'],
+  copy: PermissionCopy,
+  profile?: AcpNativeQuestionProfile,
+): string {
   const command = tool.kind === 'execute' ? commandOf(tool) : undefined
   const title = tool.title ?? tool.name
   const lines: string[] = []
@@ -240,6 +254,20 @@ function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'],
     const commandKey = command === undefined ? undefined : commandKeys.find((key) => record[key] === command)
     const directory = typeof record.cwd === 'string' ? record.cwd : undefined
     if (directory !== undefined) lines.push(`${copy.directory}: ${visibleCommand(directory)}`)
+    if (profile === 'antigravity' && tool.kind === 'execute') {
+      // Presentation normalization retains the wire fields beside command/cwd.
+      // Only remove exact duplicates; conflicting values remain approval facts.
+      if (command !== undefined && record.command === command && record.CommandLine === command)
+        presented.add('CommandLine')
+      if (directory !== undefined && directory.trim() !== '' && record.Cwd === directory) presented.add('Cwd')
+      const wait = record.WaitMsBeforeAsync
+      // Antigravity's run_command schema defines a synchronous wait before
+      // backgrounding, up to 10000 ms; this is not a command execution deadline.
+      if (typeof wait === 'number' && Number.isInteger(wait) && wait >= 0 && wait <= 10_000) {
+        lines.push(copy.backgroundWait(wait))
+        presented.add('WaitMsBeforeAsync')
+      }
+    }
     const fileContent = typeof record.file_path === 'string' && typeof record.content === 'string'
     if (fileContent) {
       lines.push(`${copy.filePath}: ${visibleCommand(record.file_path as string)}`)
@@ -310,19 +338,7 @@ function binaryApprovalOptions(options: readonly acp.PermissionOption[]):
   | undefined {
   const allows = options.filter((option) => option.kind === 'allow_once')
   const rejects = options.filter((option) => option.kind === 'reject_once')
-  const persistentAllows = options.filter((option) => option.kind === 'allow_always')
-  if (
-    allows.length !== 1 ||
-    rejects.length > 1 ||
-    persistentAllows.length > 1 ||
-    options.length !== allows.length + rejects.length + persistentAllows.length
-  ) {
-    return undefined
-  }
-  // edge case: allow_always accompanies single-use approval on standard tool gates; require reject to distinguish from scope-selection questions
-  if (persistentAllows.length > 0 && rejects.length === 0) {
-    return undefined
-  }
+  if (allows.length !== 1 || rejects.length > 1 || options.length !== allows.length + rejects.length) return undefined
   const names = options.map((option) => visibleCommand(option.name).trim())
   if (names.some((name) => name === '') || new Set(names).size !== names.length) return undefined
   return { allow: allows[0]!, ...(rejects[0] === undefined ? {} : { reject: rejects[0] }) }
@@ -334,8 +350,25 @@ export function createAcpNativePermissionHandler(
   const copy = permissionCopy(deps.locale)
   return async (params, signal) => {
     const id = requestId()
+    const nativeInteractionCall =
+      deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
+    const useExternalPolicy =
+      !nativeInteractionCall &&
+      deps.permissionProfile !== 'devin' &&
+      deps.approval?.evaluateExternal !== undefined &&
+      binaryApprovalOptions(params.options) === undefined
+    let agent = useExternalPolicy ? deps.getAgent() : undefined
     try {
       assertBounds(params.toolCall.toolCallId, params.options)
+      if (useExternalPolicy) {
+        // Keep the policy facts, audit and eventual option mapping on the same
+        // snapshot, including while the first durable append is pending.
+        const team = (params.toolCall as { readonly [dshTeamPresentation]?: DshTeamPermissionPresentation })[
+          dshTeamPresentation
+        ]
+        params = structuredClone(params)
+        if (team !== undefined) params.toolCall = withDshTeamPermissionPresentation(params.toolCall, team)
+      }
     } catch (error: unknown) {
       deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`)
       return cancelled()
@@ -369,7 +402,7 @@ export function createAcpNativePermissionHandler(
         readonly selectedOptionKind?: acp.PermissionOption['kind']
         readonly note?: string
       },
-      decisionVia: 'native-question' | 'native-approval' = 'native-question',
+      decisionVia: 'native-question' | 'native-approval' | 'external-policy' = 'native-question',
     ): Promise<acp.RequestPermissionResponse> => {
       const ok = await append(
         createPermissionDecidedAudit({
@@ -381,29 +414,71 @@ export function createAcpNativePermissionHandler(
           ...(presentation === undefined ? {} : { presentation }),
         }),
       )
-      if (!ok || init.outcome === 'cancelled') return cancelled()
+      if (!ok || init.outcome === 'cancelled' || (useExternalPolicy && (signal?.aborted || deps.getAgent() !== agent)))
+        return cancelled()
       return { outcome: { outcome: 'selected', optionId: init.optionId! } }
     }
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
-    const agent = deps.getAgent()
-    if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
+    if (!useExternalPolicy) agent = deps.getAgent()
+    if (agent === undefined || (useExternalPolicy && deps.getAgent() !== agent))
+      return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const binary = binaryApprovalOptions(params.options)
-    const nativeInteractionCall =
-      deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
     const nativeInteractionQuestion =
       nativeInteractionCall &&
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
+    if (useExternalPolicy) {
+      let outcome: AcpExternalPolicyDecision
+      try {
+        outcome = await deps.approval!.evaluateExternal!({
+          agent,
+          requestId: id,
+          profile: deps.permissionProfile ?? 'generic',
+          params,
+          ...(signal === undefined ? {} : { signal }),
+        })
+      } catch {
+        outcome = 'failed'
+      }
+      // Defensive normalization also covers non-TypeScript policy integrations.
+      if (!['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'].includes(outcome)) outcome = 'failed'
+      if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
+      if (outcome === 'failed') {
+        try {
+          await deps.onUnavailable?.({
+            code: 'ACP_PERMISSION_POLICY_UNAVAILABLE',
+            message: copy.permissionPolicyUnavailable,
+          })
+        } catch {
+          deps.log?.('dsh-acp permission policy failure reporting unavailable')
+        }
+      }
+      if (outcome === 'cancelled' || outcome === 'failed')
+        return decide({ outcome: 'cancelled', note: `policy-${outcome}` }, 'external-policy')
+      if (outcome === 'allow-once' || outcome === 'deny-once') {
+        const kind = outcome === 'allow-once' ? 'allow_once' : 'reject_once'
+        const options = params.options.filter((option) => option.kind === kind)
+        if (options.length === 1)
+          return decide(
+            { outcome: 'selected', optionId: options[0]!.optionId, selectedOptionKind: kind },
+            'external-policy',
+          )
+        // An ambiguous allow needs the full human choice; an unrepresentable
+        // denial must never offer a later human grant as a fallback.
+        if (outcome === 'deny-once')
+          return decide({ outcome: 'cancelled', note: 'policy-deny-unrepresentable' }, 'external-policy')
+      }
+    }
+
     if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
       try {
-        const inputRecord = recordValue(params.toolCall.rawInput)
-        const commandLine = commandOf(params.toolCall)
+        const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
         const outcome = await deps.approval.request({
           agent,
           toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
           callId: params.toolCall.toolCallId,
-          ...(inputRecord === undefined ? {} : { toolArgs: inputRecord }),
+          ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
           ...(commandLine === undefined ? {} : { commandLine }),
           reason: [
             nativePermissionReason(params.toolCall, copy),
@@ -448,7 +523,7 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : permissionQuestionFacts(params.toolCall, copy),
+              : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
             ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),

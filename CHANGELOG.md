@@ -4,6 +4,80 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.2-rc.1.1
+
+### 中文
+
+- 升级兼容目标及精确官方依赖至 DSH `0.2.2-rc.1`，同步 Cordis 4.1 与 Node.js `>=24.9`。安装本版前请升级宿主，无需新增用户配置。
+- 适配新的批次工具执行接口：单次 ACP 调用按批次执行，并按当前轮次解析宿主工具准入，使按步骤启用的工具（如 Web 搜索与抓取）在 ACP 会话中继续可用；PTC 的 `run_code` 传输保持可用。
+- 适配异步会话投影注册：启动时等待注册完成并保留读取句柄。模型选择的读取与写入改用 Agent 模型接口，团队成员在创建时记录其绑定范围内保存的模型。
+- 保留 HMR 重注册同名工具时活动轮次的工具连接，仅在真实撤权、工具移除或定义变化时立即关闭；轮次结束后释放不再有效的连接。
+- 迁移测试与工具夹具到新的执行器、测试工具包与投影接口，并保持既有审批、团队与诊断覆盖。
+
+### English
+
+- Target DSH `0.2.2-rc.1` with exact published dependencies, Cordis 4.1 and Node.js `>=24.9`. Upgrade the host before installing this version; no additional user configuration is required.
+- Adapt to the batch tool-execution interface: one ACP call runs as a batch and resolves host tool admission for the current turn, so step-conditional tools such as Web search and fetch remain available in ACP sessions while the PTC `run_code` transport keeps working.
+- Adapt to asynchronous session-projection registration: activation awaits registration and retains its read handle. Model selection reads and writes use the Agent model API, and teammates record their binding-scoped saved model at creation.
+- Keep the tool connection for an active turn when HMR re-registers same-named tools, closing immediately only on real revocation, tool removal or definition changes; stale connections are released when the turn ends.
+- Migrate tests and tool fixtures to the new executors, test kit and projection interfaces while preserving approval, Teams and diagnostic coverage.
+
+## 0.2.1-rc.4.1
+
+### 中文
+
+- 升级兼容目标及精确官方依赖至 DSH `0.2.1-rc.4`。安装本版前请升级 RC.4 宿主，无需新增用户配置。
+- 沿用 RC.4 原生会话标签提示和“更多会话视图”交互，保留 ds-bot 共存、插件热启停及首次 ACP 绑定等待的既有修复。
+- RC.4 修复了 DSH 自身 ACP 模式的 stdout 诊断输出污染。该模式把 DSH 作为 ACP Agent 提供给其他客户端；本插件继续负责在 DSH 内接入外部 ACP Agent。
+
+### English
+
+- Target DSH `0.2.1-rc.4` with exact published dependencies. Upgrade the host to RC.4 before installing this version; no additional user configuration is required.
+- Reuse RC.4's native conversation-tab tooltips and More conversation views interaction, preserving ds-bot coexistence, plugin hot reloads and quiet initial ACP binding waits.
+- RC.4 fixes diagnostic output contaminating stdout in DSH's own ACP mode, which exposes DSH as an ACP Agent to other clients. This plugin continues to bring external ACP Agents into DSH.
+
+## 0.2.1-rc.3.2
+
+### 中文
+
+- 修复与 ds-bot 共存时会话头部反复注册导致界面卡住的问题；保留原生导航、视图去重和双方插件热启停能力。
+- 新建 ACP 会话等待首次绑定时，不再误显示“正在重新连接活动记录…”；首次读取失败、后续断线和稳定错误仍分别保留提示与恢复操作。
+- 继续兼容 DSH `0.2.1-rc.3`，无需新增用户配置。
+
+### English
+
+- Fix repeated conversation-header registration that could freeze the UI when running alongside ds-bot. Preserve native navigation, unique view tabs and hot enable/disable behavior for both plugins.
+- Keep the activity area quiet while a new ACP session establishes its initial binding instead of showing “Reconnecting to activity history…”. Retain distinct feedback and recovery controls for initial read failures, later disconnections and stable errors.
+- Continue to support DSH `0.2.1-rc.3` without additional user configuration.
+
+## 0.2.1-rc.3.1
+
+### 中文
+
+- 升级兼容目标至 DSH `0.2.1-rc.3`，沿用原生插件入口、会话导航和草稿恢复；安装本版前请匹配 RC.3 宿主，无需新增用户配置。
+- 对齐独立 ACP 子会话的工具可用性、Teams 成员模型状态和父页面审批。完整保留 Agent 提供的授权选项、ID 与范围，嵌套子会话仍以原始执行身份答复；Devin 请求继续由用户确认。
+- 修复无关 DSH 工具桥退役时误取消 Agent 自带工具审批的问题；工具权限撤销后拒绝迟到批准，并保留已受理 MCP 请求的结果收尾。
+- 新增供明确接入的策略插件使用的 [Host 授权策略入口](docs/permission-policy.md)，支持对完整多选授权请求作一次允许或拒绝。默认不启用自动策略；无适用规则时保留人工完整选项，策略故障或取消时不授权，也不产生长期授权。
+- 历史分支缺少真实 `session/fork` 能力或分支失败时，不再用空白 Agent 会话冒充历史继承；保留已有记录与恢复提示。
+- 保留已提交主回答的末段，避免后续通知将其折叠进过程；统一原生步骤折叠与工具展示。经宿主确认的 Codex 延后等待显示等待状态，真实工具错误仍保留；Devin 只有工具前说明、失败后无最终回复时不再误报完成。
+- 修正终端启动失败、退出和释放后的原生任务记录；改善 Antigravity 显式代理环境下的本机连接，并去除审批摘要中完全重复的字段，保留原始详情和全部选项。
+- Stop 或轮次结束时，未报告结果的 Agent 工具保留未完成状态，不再推定工具已停止；刷新后仍保留该状态，过程分组也不将其标成分析完成。
+- 已知边界仍保留：Codex 原生命令可能在轮次取消后继续执行；Antigravity raw `1.3.0` 的文件审批与执行事件缺少可靠关联；原生整轮文件改动摘要仍需宿主记录接口。单次工具 Diff 与文件预览不等于整轮摘要。
+- 真实 Agent 验证范围限于对应场景和平台；本版不宣称企业受管账号或 Windows 真实 Agent 全矩阵已通过。具体范围见 [E2E 指南](test/e2e/README.md)。
+
+### English
+
+- Target DSH `0.2.1-rc.3`, retaining native plugin entry points, session navigation and draft restoration. Match the RC.3 host before installing this version; no additional user configuration is required.
+- Align tool availability in standalone ACP child sessions, Teams member model state and approvals on the parent page. Preserve every Agent-provided option, ID and scope, including nested children’s original execution identity. Devin requests still require human confirmation.
+- Prevent unrelated DSH tool-bridge retirement from cancelling approvals for an Agent’s own tools. Reject late approvals after capability revocation and preserve result delivery for admitted MCP requests.
+- Add an opt-in [Host permission-policy interface](docs/permission-policy.en.md) for explicitly integrated policy plugins to allow or deny a full multi-option request once. No automatic policy is enabled by default. Inapplicable rules retain the complete human choice; policy failure or cancellation grants no permission, and policies cannot issue standing grants.
+- Refuse history-preserving branches when real `session/fork` support is unavailable or the fork fails, instead of presenting an empty Agent session as inherited history. Retain existing records and recovery guidance.
+- Keep the final part of a committed answer visible when later notifications arrive, and align native step folding and tool presentation. Show host-verified Codex deferred waits as waiting while retaining real tool errors. Do not report completion when Devin supplies only a pre-tool explanation and no final reply after failure.
+- Correct native terminal records across launch failure, exit and release. Improve Antigravity loopback connections under explicitly configured proxies, and remove exactly duplicated approval-summary fields while preserving raw details and all options.
+- After Stop or turn completion, keep Agent tools without a reported result unfinished instead of assuming they stopped. Preserve that state after reload and avoid labelling those tool entries as completed analysis.
+- Known boundaries remain: Codex native commands can continue after turn cancellation; Antigravity raw `1.3.0` file approvals and execution events lack reliable correlation; native per-turn changed-file summaries still require Host recording support. Per-tool Diffs and file previews do not establish a complete turn summary.
+- Real Agent verification remains specific to its scenarios and platforms. This release does not certify enterprise-managed accounts or a complete Windows real-Agent matrix. See the [E2E guide](test/e2e/README.md) for scope.
+
 ## 0.2.1-rc.2.4
 
 ### 中文

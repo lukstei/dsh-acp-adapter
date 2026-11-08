@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { executeSingleTool } from '../../support/tool-call.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import {
   admitLongTaskTool,
@@ -47,6 +49,7 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtime = await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   const budget = createLongTaskBudget()
   let bodyCalls = 0
   let errorResults = 0
@@ -85,8 +88,7 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
   })
   try {
     const calls = Array.from({ length: 3 }, (_, index) =>
-      ctx.tools.execute({
-        signal: new AbortController().signal,
+      executeSingleTool(ctx, {
         callId: ToolCallId(`parallel-${index}`),
         name: 'bash',
         arguments: { command: 'same side effect' },
@@ -158,4 +160,33 @@ it('counts an expired total deadline as a sticky pre-dispatch failure', () => {
     admitLongTaskTool(budget, { scene: 'A', toolName: 'read', callId: 'late', now: 10 + LONG_TASK_BUDGET.totalMs }),
   ).toBe('LONG_TASK_TOTAL_DEADLINE')
   expect(budget.totalDispatches).toBe(0)
+})
+
+it('counts all full-option B requests with a B-only 32-request ceiling', () => {
+  const budget = createLongTaskBudget()
+  for (let index = 0; index < 32; index += 1) expect(recordLongTaskApprovalRequest(budget, 'B')).toBeUndefined()
+  expect(budget.approvalRequests).toBe(32)
+  expect(recordLongTaskApprovalRequest(budget, 'B')).toBe('LONG_TASK_SCENE_APPROVAL_REQUEST_BUDGET')
+  expect(budget.sceneApprovalRequests.B).toBe(32)
+  expect(budget.totalDispatches).toBe(0)
+})
+
+it('adds only actual B requests above 16 to the global ceiling, without funding other scenes', () => {
+  const budget = createLongTaskBudget()
+  for (let index = 0; index < 8; index += 1) expect(recordLongTaskApprovalRequest(budget, 'C')).toBeUndefined()
+  for (let index = 0; index < 32; index += 1) expect(recordLongTaskApprovalRequest(budget, 'B')).toBeUndefined()
+  expect(budget.approvalRequests).toBe(40)
+  expect(recordLongTaskApprovalRequest(budget, 'D')).toBe('LONG_TASK_APPROVAL_REQUEST_BUDGET')
+  const partial = createLongTaskBudget()
+  for (let index = 0; index < 17; index += 1) expect(recordLongTaskApprovalRequest(partial, 'B')).toBeUndefined()
+  for (let index = 0; index < 8; index += 1) expect(recordLongTaskApprovalRequest(partial, 'C')).toBeUndefined()
+  expect(partial.approvalRequests).toBe(25)
+  expect(recordLongTaskApprovalRequest(partial, 'D')).toBe('LONG_TASK_APPROVAL_REQUEST_BUDGET')
+})
+
+it('keeps the original global 24 request ceiling when B has no extra requests', () => {
+  const budget = createLongTaskBudget()
+  for (let index = 0; index < 16; index += 1) expect(recordLongTaskApprovalRequest(budget, 'A')).toBeUndefined()
+  for (let index = 0; index < 8; index += 1) expect(recordLongTaskApprovalRequest(budget, 'C')).toBeUndefined()
+  expect(recordLongTaskApprovalRequest(budget, 'D')).toBe('LONG_TASK_APPROVAL_REQUEST_BUDGET')
 })
