@@ -25,8 +25,12 @@ describe('ACP profile route launch contract', () => {
     const command = path.join(directory, process.platform === 'win32' ? 'node.exe' : 'node')
     let adapter: AcpProfileAdapter | undefined
     try {
-      // A real executable copy also works on Windows without symlink privileges.
-      fs.copyFileSync(process.execPath, command, fs.constants.COPYFILE_FICLONE)
+      // A real executable copy also works on Windows without symlink privileges; macOS dylib needs symlink or copy
+      if (process.platform === 'darwin') {
+        fs.symlinkSync(process.execPath, command)
+      } else {
+        fs.copyFileSync(process.execPath, command, fs.constants.COPYFILE_FICLONE)
+      }
       fs.chmodSync(command, 0o700)
       const config = acpSettingsSchema({
         agents: {
