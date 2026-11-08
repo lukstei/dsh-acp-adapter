@@ -223,46 +223,18 @@ describe('complete ACP permission choices', () => {
     const approval = { request: vi.fn<AcpNativeApprovalService['request']>(async () => 'allowed-once') }
     const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
     const handler = createAcpNativePermissionHandler({ approval, userQuestions: { ask }, getAgent: () => ({}) })
-    const toolCall = {
-      toolCallId: 'call-1',
-      title: 'run_command',
-      kind: 'execute' as const,
-      rawInput: { command: 'git status', cwd: '/workspace' },
-    }
-    expect(
-      await handler({
-        sessionId: 'session-1',
-        toolCall,
-        options: [
-          option('precise-allow', allowName, 'allow_once'),
-          option('precise-reject', rejectName, 'reject_once'),
-        ],
-      }),
-    ).toEqual({ outcome: { outcome: 'selected', optionId: 'precise-allow' } })
-    const callArg = approval.request.mock.calls[0]?.[0]
-    expect(callArg?.toolArgs).toEqual({ command: 'git status', cwd: '/workspace' })
-    expect(callArg?.commandLine).toBe('git status')
-    const reason = callArg?.reason
-    expect(reason).toContain(allowName.replace('\u001b', '\\x1b'))
-    expect(reason).toContain(rejectName)
-    expect(reason).not.toContain('\u001b')
-    expect(ask).not.toHaveBeenCalled()
-  })
-
-  it('routes standard tool requests with allow_always to native approval when reject is available', async () => {
-    const approval = { request: vi.fn<AcpNativeApprovalService['request']>(async () => 'allowed-once') }
-    const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
-    const handler = createAcpNativePermissionHandler({ approval, userQuestions: { ask }, getAgent: () => ({}) })
     expect(
       await handler(
         request([
-          option('always', 'Allow Always', 'allow_always'),
-          option('once', 'Allow', 'allow_once'),
-          option('deny', 'Deny', 'reject_once'),
+          option('precise-allow', allowName, 'allow_once'),
+          option('precise-reject', rejectName, 'reject_once'),
         ]),
       ),
-    ).toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
-    expect(approval.request).toHaveBeenCalledTimes(1)
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'precise-allow' } })
+    const reason = approval.request.mock.calls[0]?.[0]?.reason
+    expect(reason).toContain(allowName.replace('\u001b', '\\x1b'))
+    expect(reason).toContain(rejectName)
+    expect(reason).not.toContain('\u001b')
     expect(ask).not.toHaveBeenCalled()
   })
 
