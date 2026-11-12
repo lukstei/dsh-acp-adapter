@@ -4,6 +4,7 @@ import {
   localSettlementText,
   projectionIsAcp,
   publishRecoveryActionResult,
+  recordRecoveryActionFailure,
 } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 
@@ -61,6 +62,20 @@ describe('ACP recovery dock projection gate', () => {
     expect(publishRecoveryActionResult(view, () => false, publish)).toBe(false)
     expect(publish).toHaveBeenCalledOnce()
     expect(publishRecoveryActionResult(undefined, () => true, publish)).toBe(false)
+  })
+
+  it('records recovery action failure and opens the fallback modal for live generation', () => {
+    const setError = vi.fn()
+    const openDialog = vi.fn()
+    const error = new Error('Remote reconnect rejected')
+
+    expect(recordRecoveryActionFailure(error, () => true, setError, openDialog)).toBe(true)
+    expect(setError).toHaveBeenCalledWith('Remote reconnect rejected')
+    expect(openDialog).toHaveBeenCalledOnce()
+
+    expect(recordRecoveryActionFailure(error, () => false, setError, openDialog)).toBe(false)
+    expect(setError).toHaveBeenCalledOnce()
+    expect(openDialog).toHaveBeenCalledOnce()
   })
 
   it('classifies auto-reconnectable recovery kinds correctly', () => {

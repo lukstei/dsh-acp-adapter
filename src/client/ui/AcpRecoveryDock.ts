@@ -93,6 +93,19 @@ export function publishRecoveryActionResult(
   return true
 }
 
+/** Record action failure details and surface the fallback modal for user resolution. */
+export function recordRecoveryActionFailure(
+  error: unknown,
+  isCurrent: () => boolean,
+  setError: (message: string) => void,
+  openDialog: () => void,
+): boolean {
+  if (!isCurrent()) return false
+  setError(error instanceof Error ? error.message : String(error))
+  openDialog()
+  return true
+}
+
 function recoveryChoice(
   action: RecoveryAction,
   variant: ButtonVariant,
@@ -239,8 +252,15 @@ export function AcpRecoveryDock({
         },
       )
     } catch (error) {
-      if (inFlight.current?.token === operation.token && activeSession.current === sessionId)
-        setActionError(error instanceof Error ? error.message : String(error))
+      recordRecoveryActionFailure(
+        error,
+        () =>
+          inFlight.current?.token === operation.token &&
+          activeSession.current === sessionId &&
+          actionEpoch === epoch.current,
+        setActionError,
+        () => setOpen(true),
+      )
     } finally {
       if (inFlight.current?.token === operation.token) {
         inFlight.current = null
