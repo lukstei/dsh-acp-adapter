@@ -455,6 +455,7 @@ export async function createDshToolBridge(
     readonly queueAbort: AbortController
     readonly bodySignal?: AbortSignal
     feedbackCommitFailed: boolean
+    yieldInstructionPending: boolean
     accepting: boolean
     remoteOutcomeKnown: boolean
     externallyAborted: boolean
@@ -1304,21 +1305,30 @@ export async function createDshToolBridge(
                 'This DSH tool requests the end of the current turn. Finish this ACP response now without further tool calls.',
               ),
             })
+          const pendingInput = agent.inbox.nextStep.length > 0
           if (repeatToolReminderPending)
             content.push({
               type: 'text',
               text: generatedContextBlock(
-                'DSH has queued feedback because this tool was repeated. Stop repeating the tool call and end this ACP response now so DSH can deliver the pending feedback. Then continue based on that feedback.',
+                "DSH has queued feedback because this tool was repeated. Stop repeating the tool call and end this ACP response now without further tool calls so DSH can deliver the pending feedback. Then continue based on that feedback. If you make another tool call, this yield instruction expires; follow the latest tool response's handoff state instead.",
               ),
             })
           // Do not steal or duplicate inbox messages. Only the native loop claims them.
-          if (agent.inbox.nextStep.length > 0 && !repeatToolReminderPending)
+          else if (pendingInput)
             content.push({
               type: 'text',
               text: generatedContextBlock(
-                'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.',
+                "DSH has queued input for your next step. End this ACP response now with a brief progress update, without further tool calls or a final answer; DSH will deliver the pending input and continue the turn. If you make another tool call, this yield instruction expires; follow the latest tool response's handoff state instead.",
               ),
             })
+          else if (callPrompt.yieldInstructionPending && result.concludesTurn !== true)
+            content.push({
+              type: 'text',
+              text: generatedContextBlock(
+                'The previous yield instruction no longer applies: the queued input has been consumed. DSH has no pending next-step input to continue on. Continue any unfinished work in this ACP response.',
+              ),
+            })
+          callPrompt.yieldInstructionPending = pendingInput || repeatToolReminderPending
           if (diagnosticEnabled && diagnosticBase !== undefined)
             collectLiveDiagnostic(() => {
               const returnInbox = diagnosticInboxCounts(agent)
@@ -1335,7 +1345,7 @@ export async function createDshToolBridge(
                 inboxSnapshotStage: returnInbox === undefined ? ('unavailable' as const) : ('handler-return' as const),
                 additionalContextsCount: additionalContexts.length,
                 repeatReminderContextCount,
-                pendingYieldAppended: agent.inbox.nextStep.length > 0 && !repeatToolReminderPending,
+                pendingYieldAppended: pendingInput && !repeatToolReminderPending,
                 concludesTurnReminderAppended: result.concludesTurn === true,
                 durationMs: Math.max(0, Math.round(performance.now() - dispatchStartedAt)),
                 handlerIsError,
@@ -1440,6 +1450,7 @@ export async function createDshToolBridge(
         queueAbort: new AbortController(),
         bodySignal: bodySignal ?? signal,
         feedbackCommitFailed: false,
+        yieldInstructionPending: false,
         accepting: true,
         remoteOutcomeKnown: false,
         externallyAborted: false,

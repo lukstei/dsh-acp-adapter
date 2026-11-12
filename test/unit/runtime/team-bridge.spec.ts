@@ -709,6 +709,29 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.endPrompt()
   })
 
+  it('preserves an explicit turn conclusion after queued input is consumed', async () => {
+    const fixture = await setup()
+    fixture.lease.beginPrompt(new AbortController().signal)
+    fixture.agent.inbox.nextStep.push(
+      createUserMessage({
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: 'pending input' }],
+      }),
+    )
+    await fixture.client.callTool({ name: 'list_agents', arguments: {} })
+    fixture.agent.inbox.nextStep.splice(0)
+    fixture.execute.mockImplementationOnce(async () => ({
+      content: [{ type: 'text', text: 'finished' }],
+      isError: false,
+      concludesTurn: true,
+    }))
+    const result = await fixture.client.callTool({ name: 'list_agents', arguments: {} })
+    expect(JSON.stringify(result)).toContain('This DSH tool requests the end of the current turn')
+    expect(JSON.stringify(result)).not.toContain('Continue any unfinished work')
+    fixture.lease.endPrompt({ stopReason: 'end_turn', remoteOutcomeKnown: true })
+    await fixture.lease.drainPrompt!()
+  })
+
   it('reports only successfully returned prompt-scoped Host tool results as completion evidence', async () => {
     const fixture = await setup()
     cleanup.push(() => fixture.lease.close())

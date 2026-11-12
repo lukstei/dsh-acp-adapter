@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, LlmAdapter, MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -126,7 +126,7 @@ async function createHarness(sessionId: string) {
     await bridgeGate
     return [{ type: 'text' as const, text: 'host tool completed' }]
   })
-  let feedbackMessageId: string | undefined
+  let feedbackMessageId: MessageId | undefined
   ctx.tools.register(
     defineContentToolFixture({
       name: 'bridge_feedback',
@@ -169,6 +169,17 @@ async function createHarness(sessionId: string) {
     provider: 'bridge-feedback-test',
     model: 'scripted',
   })
+  ctx.tools.register(
+    defineContentToolFixture({
+      name: 'consume_feedback',
+      description: 'Deliver pending feedback through a tool result.',
+      parameters: { message_id: { type: 'string', required: true } },
+      async execute(args) {
+        agent.inbox.remove(MessageId(args.message_id))
+        return [{ type: 'text', text: 'feedback collected' }]
+      },
+    }),
+  )
   const assembly = await ctx.systemPrompt.assemble({ scope: agent })
   const lease = (await createDshToolBridge(
     ctx as never,
@@ -199,6 +210,7 @@ async function createHarness(sessionId: string) {
 
   const beginBridgePrompt = (signal: AbortSignal) => lease.beginPrompt(signal)
   return {
+    client,
     ctx,
     agent: agent as Agent,
     adapter,
@@ -220,6 +232,80 @@ function send(agent: Agent, text: string): void {
 }
 
 describe('real AgentLoop and HTTP bridge feedback handoff', () => {
+  it.each([false, true])('refreshes the handoff after consuming feedback, remaining input=%s', async (remaining) => {
+    const fixture = await createHarness(`bridge-yield-consumed-${remaining}`)
+    fixture.adapter.firstResponse = textResponse('continued unfinished work')
+    const responseTexts: string[] = []
+    fixture.adapter.beforeRequest = async (request, index) => {
+      fixture.beginBridgePrompt(request.signal!)
+      if (index === 0) {
+        const first = await fixture.invokeBridgeTool()
+        responseTexts.push(JSON.stringify(first))
+        if (remaining)
+          fixture.agent.inject(
+            createUserMessage({ content: [{ type: 'text', text: 'another input' }], source: { kind: 'user' } }),
+          )
+        const consumed = await fixture.client.callTool({
+          name: 'consume_feedback',
+          arguments: { message_id: fixture.feedbackMessageId },
+        })
+        const next = await fixture.client.callTool({ name: 'native_step', arguments: {} })
+        responseTexts.push(JSON.stringify(consumed), JSON.stringify(next))
+      } else {
+        const result = await fixture.client.callTool({ name: 'native_step', arguments: {} })
+        responseTexts.push(JSON.stringify(result))
+      }
+      fixture.lease.endPrompt({ stopReason: 'end_turn', remoteOutcomeKnown: true })
+      await fixture.lease.drainPrompt!()
+    }
+
+    send(fixture.agent, 'continue after collecting feedback')
+    await fixture.agent.whenIdle()
+    expect(responseTexts[0]).toContain('without further tool calls')
+    expect(responseTexts[0]).toContain('this yield instruction expires')
+    expect(
+      responseTexts.slice(1, 3).map((text) => ({
+        yields: text.includes('End this ACP response now'),
+        retracts: text.includes('The previous yield instruction no longer applies'),
+      })),
+    ).toEqual(
+      remaining
+        ? [
+            { yields: true, retracts: false },
+            { yields: true, retracts: false },
+          ]
+        : [
+            { yields: false, retracts: true },
+            { yields: false, retracts: false },
+          ],
+    )
+    expect(fixture.adapter.requests).toHaveLength(remaining ? 2 : 1)
+    expect([fixture.agent.inbox.nextStep, fixture.agent.inbox.nextTurn]).toEqual([[], []])
+    expect(
+      fixture.agent.session.snapshotEvents().findLast((event) => event.type === 'assistant/message'),
+    ).toMatchObject({
+      data: { message: { content: [{ type: 'text', text: remaining ? 'done' : 'continued unfinished work' }] } },
+    })
+    send(fixture.agent, 'start a new prompt')
+    await fixture.agent.whenIdle()
+    expect(fixture.adapter.requests).toHaveLength(remaining ? 3 : 2)
+    expect(responseTexts.slice(3).every((text) => !text.includes('yield instruction'))).toBe(true)
+  })
+
+  it('does not carry a yield instruction into a later prompt', async () => {
+    const fixture = await createHarness('bridge-yield-prompt-reset')
+    fixture.lease.beginPrompt(new AbortController().signal)
+    await fixture.invokeBridgeTool()
+    fixture.lease.endPrompt({ stopReason: 'end_turn', remoteOutcomeKnown: true })
+    await fixture.lease.drainPrompt!()
+    fixture.agent.inbox.remove(fixture.feedbackMessageId!)
+    fixture.lease.beginPrompt(new AbortController().signal)
+    const result = await fixture.client.callTool({ name: 'native_step', arguments: {} })
+    expect(JSON.stringify(result)).not.toContain('yield instruction')
+    fixture.lease.endPrompt({ stopReason: 'end_turn', remoteOutcomeKnown: true })
+    await fixture.lease.drainPrompt!()
+  })
+
   it('accepts feedback when the native inject observer throws after inbox append', async () => {
     const fixture = await createHarness('bridge-feedback-observer-throws-after-append')
     fixture.adapter.beforeRequest = async (request, index) => {
