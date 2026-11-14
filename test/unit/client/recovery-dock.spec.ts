@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  isAutoReconnectable,
   localSettlementText,
   projectionIsAcp,
   publishRecoveryActionResult,
-  recordRecoveryActionFailure,
 } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 
@@ -62,44 +60,5 @@ describe('ACP recovery dock projection gate', () => {
     expect(publishRecoveryActionResult(view, () => false, publish)).toBe(false)
     expect(publish).toHaveBeenCalledOnce()
     expect(publishRecoveryActionResult(undefined, () => true, publish)).toBe(false)
-  })
-
-  it('records recovery action failure and opens the fallback modal for live generation', () => {
-    const setError = vi.fn()
-    const openDialog = vi.fn()
-    const error = new Error('Remote reconnect rejected')
-
-    expect(recordRecoveryActionFailure(error, () => true, setError, openDialog)).toBe(true)
-    expect(setError).toHaveBeenCalledWith('Remote reconnect rejected')
-    expect(openDialog).toHaveBeenCalledOnce()
-
-    expect(recordRecoveryActionFailure(error, () => false, setError, openDialog)).toBe(false)
-    expect(setError).toHaveBeenCalledOnce()
-    expect(openDialog).toHaveBeenCalledOnce()
-  })
-
-  it('classifies auto-reconnectable recovery kinds correctly', () => {
-    expect(isAutoReconnectable(null)).toBe(false)
-    const viewWith = (kind: AcpRecoveryView['kind']): AcpRecoveryView => ({
-      dshSessionId: 'session-1',
-      kind,
-      cause: null,
-      detail: null,
-      provider: 'acp-antigravity-acp',
-      acpSessionId: 'agy-session',
-      generation: 1,
-      interruptedTurnId: null,
-      lastAttemptAt: null,
-      lastUserAction: null,
-      updatedAt: 1,
-    })
-    expect(isAutoReconnectable(viewWith('reconnect-required'))).toBe(true)
-    expect(isAutoReconnectable(viewWith('resumed-unverified'))).toBe(true)
-    expect(isAutoReconnectable(viewWith('outcome-unknown'))).toBe(true)
-
-    expect(isAutoReconnectable(viewWith('healthy'))).toBe(false)
-    expect(isAutoReconnectable(viewWith('session-lost'))).toBe(false)
-    expect(isAutoReconnectable(viewWith('reconciliation-required'))).toBe(false)
-    expect(isAutoReconnectable(viewWith('local-history-damaged'))).toBe(false)
   })
 })
