@@ -428,7 +428,7 @@ export function createAcpNativePermissionHandler(
     // An escalated call is answered in the native approval window, not in the Agent's
     // permission options: its reason, chrome and audit are the native ones, and only
     // the resulting once-answer is mapped back onto the Agent's option IDs.
-    const answerWithNativeApproval = async (): Promise<acp.RequestPermissionResponse> => {
+    const answerWithNativeApproval = async (policyReason?: string): Promise<acp.RequestPermissionResponse> => {
       const allow = params.options.find((option) => option.kind === 'allow_once')
       const reject = params.options.find((option) => option.kind === 'reject_once')
       if (deps.approval !== undefined && allow !== undefined) {
@@ -440,6 +440,9 @@ export function createAcpNativePermissionHandler(
             callId: params.toolCall.toolCallId,
             ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
             ...(commandLine === undefined ? {} : { commandLine }),
+            ...(policyReason === undefined
+              ? {}
+              : { reason: `${visibleCommand(policyReason)}\n\n${nativePermissionReason(params.toolCall, copy)}` }),
             ...(signal === undefined ? {} : { signal }),
           })
           if (outcome === 'allowed-once')
@@ -571,10 +574,11 @@ export function createAcpNativePermissionHandler(
       }
       // A policy escalated this request to a human: the machine chain stops here and
       // the native approval window answers it, so the next provider never sees the call.
+      // A policy-supplied reason leads the window; it is the one line explaining why.
       if (outcome === 'ask') return answerWithNativeApproval()
+      if (typeof outcome === 'object') return answerWithNativeApproval(outcome.reason)
       // Defensive normalization also covers non-TypeScript policy integrations.
-      if (!['allow-once', 'deny-once', 'ask', 'not-applicable', 'cancelled', 'failed'].includes(outcome))
-        outcome = 'failed'
+      if (!['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'].includes(outcome)) outcome = 'failed'
       if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
       if (outcome === 'failed') {
         try {

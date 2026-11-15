@@ -1,8 +1,13 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { agentCarrier } from '@deepseek-ai/dsh-agent'
-import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '../../contract/permission-policy.ts'
+import type {
+  AcpAskDecision,
+  AcpExternalPolicyDecision,
+  AcpExternalPolicyRequest,
+} from '../../contract/permission-policy.ts'
 
 export type {
+  AcpAskDecision,
   AcpExternalPolicyDecision,
   AcpExternalPolicyRequest,
   AcpPermissionFacts,
@@ -31,10 +36,18 @@ function validDecision(value: unknown): value is AcpExternalPolicyDecision {
     value === 'allow-once' ||
     value === 'deny-once' ||
     value === 'ask' ||
+    isAskDecision(value) ||
     value === 'not-applicable' ||
     value === 'cancelled' ||
     value === 'failed'
   )
+}
+
+/** An escalated decision carrying its reason; nothing else about the shape is trusted. */
+function isAskDecision(value: unknown): value is AcpAskDecision {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as Record<string, unknown>
+  return record.decision === 'ask' && typeof record.reason === 'string'
 }
 
 function freezeFacts(value: unknown): void {

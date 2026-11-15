@@ -35,6 +35,10 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
           agent,
           toolName: request.toolName,
           ...(request.reason === undefined ? {} : { reason: request.reason }),
+          // The card title reads displayReason first. ACP requests have no native
+          // tool-call record to project a reason from, so without this the window
+          // falls back to naming the tool and drops what the policy decided.
+          ...(request.reason === undefined ? {} : { displayReason: { en: request.reason } }),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
           ...(request.callId === undefined ? {} : { callId: request.callId as ToolCallId }),
           // ACP has no native tool-call record for an answerer to resolve.

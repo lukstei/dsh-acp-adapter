@@ -229,6 +229,21 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.ask).toHaveBeenCalledOnce()
   })
 
+  it('ask carries the policy reason into the native approval request', async () => {
+    const f = await fixture()
+    f.ctx.on('dsh-acp/permission-policy', async () => ({ decision: 'ask', reason: 'gate says no' }))
+    expect(await f.handle()).toEqual(selected('once'))
+    expect(f.legacy).toHaveBeenCalledOnce()
+    const passed = f.legacy.mock.calls[0]![0] as {
+      reason?: string
+      displayReason?: { en: string }
+    }
+    expect(passed.reason ?? '<missing>').toContain('gate says no')
+    // The card title reads displayReason first; ACP cannot project one from a tool call.
+    expect(passed.displayReason?.en).toContain('gate says no')
+    expect(decided(f.records).decisionVia).toBe('native-approval')
+  })
+
   it('ask ends the machine chain in the native approval window, not in Agent options', async () => {
     const f = await fixture()
     const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
