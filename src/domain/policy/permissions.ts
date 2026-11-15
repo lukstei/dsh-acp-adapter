@@ -425,9 +425,43 @@ export function createAcpNativePermissionHandler(
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
-    // The native answer surfaces: the approval request when the option set is one
-    // allow (plus at most one reject), the question otherwise. Reached on a policy
-    // abstention, and directly when a policy escalates the call to a human.
+    // An escalated call is answered in the native approval window, not in the Agent's
+    // permission options: its reason, chrome and audit are the native ones, and only
+    // the resulting once-answer is mapped back onto the Agent's option IDs.
+    const answerWithNativeApproval = async (): Promise<acp.RequestPermissionResponse> => {
+      const allow = params.options.find((option) => option.kind === 'allow_once')
+      const reject = params.options.find((option) => option.kind === 'reject_once')
+      if (deps.approval !== undefined && allow !== undefined) {
+        try {
+          const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
+          const outcome = await deps.approval.request({
+            agent,
+            toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
+            callId: params.toolCall.toolCallId,
+            ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
+            ...(commandLine === undefined ? {} : { commandLine }),
+            ...(signal === undefined ? {} : { signal }),
+          })
+          if (outcome === 'allowed-once')
+            return decide(
+              { outcome: 'selected', optionId: allow.optionId, selectedOptionKind: allow.kind },
+              'native-approval',
+            )
+          if (outcome === 'rejected' && reject !== undefined)
+            return decide(
+              { outcome: 'selected', optionId: reject.optionId, selectedOptionKind: reject.kind },
+              'native-approval',
+            )
+          return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
+        } catch (error: unknown) {
+          deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
+        }
+      }
+      return answerWithoutPolicy()
+    }
+
+    // The native answer surfaces on a policy abstention: the approval request when the
+    // option set is one allow plus at most one reject, the permission question otherwise.
     const answerWithoutPolicy = async (): Promise<acp.RequestPermissionResponse> => {
       if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
         try {
@@ -536,8 +570,8 @@ export function createAcpNativePermissionHandler(
         outcome = 'failed'
       }
       // A policy escalated this request to a human: the machine chain stops here and
-      // the native surfaces answer, so the next provider never authorizes it.
-      if (outcome === 'ask') return answerWithoutPolicy()
+      // the native approval window answers it, so the next provider never sees the call.
+      if (outcome === 'ask') return answerWithNativeApproval()
       // Defensive normalization also covers non-TypeScript policy integrations.
       if (!['allow-once', 'deny-once', 'ask', 'not-applicable', 'cancelled', 'failed'].includes(outcome))
         outcome = 'failed'

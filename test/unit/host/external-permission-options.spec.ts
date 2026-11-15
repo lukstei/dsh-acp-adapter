@@ -229,16 +229,16 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.ask).toHaveBeenCalledOnce()
   })
 
-  it('ask ends the machine chain at the human question without consulting later providers', async () => {
+  it('ask ends the machine chain in the native approval window, not in Agent options', async () => {
     const f = await fixture()
     const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
     f.ctx.on('dsh-acp/permission-policy', async () => 'ask', { prepend: true })
     f.ctx.on('dsh-acp/permission-policy', later)
-    expect(await f.handle()).toEqual(selected('always'))
+    expect(await f.handle()).toEqual(selected('once'))
     expect(later).not.toHaveBeenCalled()
-    expect(f.ask).toHaveBeenCalledOnce()
-    expect(f.legacy).not.toHaveBeenCalled()
-    expect(decided(f.records).decisionVia).toBe('native-question')
+    expect(f.ask).not.toHaveBeenCalled()
+    expect(f.legacy).toHaveBeenCalledOnce()
+    expect(decided(f.records).decisionVia).toBe('native-approval')
   })
 
   it('ask with binary approval options asks natively instead of falling through', async () => {
