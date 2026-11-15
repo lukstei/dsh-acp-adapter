@@ -229,16 +229,28 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.ask).toHaveBeenCalledOnce()
   })
 
-  it('keeps ordinary binary approval on its native chain', async () => {
+  it('evaluates binary approval options through machine policy and falls back to native approval on not-applicable', async () => {
+    const f = await fixture()
+    const provider = vi.fn(async () => 'not-applicable' as const)
+    f.ctx.on('dsh-acp/permission-policy', provider)
+    const input = request()
+    input.options = [input.options[0]!, input.options[2]!]
+    expect(await f.handle(input)).toEqual(selected('once'))
+    expect(provider).toHaveBeenCalledOnce()
+    expect(f.legacy).toHaveBeenCalledOnce()
+    expect(decided(f.records).decisionVia).toBe('native-approval')
+  })
+
+  it('selects option directly when machine policy decides a binary approval', async () => {
     const f = await fixture()
     const provider = vi.fn(async () => 'deny-once' as const)
     f.ctx.on('dsh-acp/permission-policy', provider)
     const input = request()
     input.options = [input.options[0]!, input.options[2]!]
-    expect(await f.handle(input)).toEqual(selected('once'))
-    expect(provider).not.toHaveBeenCalled()
-    expect(f.legacy).toHaveBeenCalledOnce()
-    expect(decided(f.records).decisionVia).toBe('native-approval')
+    expect(await f.handle(input)).toEqual(selected('deny'))
+    expect(provider).toHaveBeenCalledOnce()
+    expect(f.legacy).not.toHaveBeenCalled()
+    expect(decided(f.records).decisionVia).toBe('external-policy')
   })
 
   it('keeps Antigravity interaction questions with their original question owner', async () => {

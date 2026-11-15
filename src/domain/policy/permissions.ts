@@ -355,8 +355,7 @@ export function createAcpNativePermissionHandler(
     const useExternalPolicy =
       !nativeInteractionCall &&
       deps.permissionProfile !== 'devin' &&
-      deps.approval?.evaluateExternal !== undefined &&
-      binaryApprovalOptions(params.options) === undefined
+      deps.approval?.evaluateExternal !== undefined
     let agent = useExternalPolicy ? deps.getAgent() : undefined
     try {
       assertBounds(params.toolCall.toolCallId, params.options)
