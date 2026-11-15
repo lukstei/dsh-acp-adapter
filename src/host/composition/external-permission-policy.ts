@@ -30,6 +30,7 @@ function validDecision(value: unknown): value is AcpExternalPolicyDecision {
   return (
     value === 'allow-once' ||
     value === 'deny-once' ||
+    value === 'ask' ||
     value === 'not-applicable' ||
     value === 'cancelled' ||
     value === 'failed'

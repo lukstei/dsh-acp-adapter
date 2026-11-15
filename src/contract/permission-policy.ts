@@ -1,8 +1,12 @@
 import type * as acp from '@agentclientprotocol/sdk'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
-/** A policy can decide only this request; standing grants remain human choices. */
-export type AcpExternalPolicyDecision = 'allow-once' | 'deny-once' | 'not-applicable' | 'cancelled' | 'failed'
+/**
+ * A policy can decide only this request; standing grants remain human choices.
+ * `ask` ends the machine chain at a human decision: the call is surfaced to the
+ * client's own permission surface instead of falling through to a later provider.
+ */
+export type AcpExternalPolicyDecision = 'allow-once' | 'deny-once' | 'ask' | 'not-applicable' | 'cancelled' | 'failed'
 
 /** Read-only JSON facts received from the external Agent. */
 export type AcpPermissionFacts<T> = T extends object ? { readonly [Key in keyof T]: AcpPermissionFacts<T[Key]> } : T

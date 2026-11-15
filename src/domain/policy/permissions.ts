@@ -353,9 +353,7 @@ export function createAcpNativePermissionHandler(
     const nativeInteractionCall =
       deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
     const useExternalPolicy =
-      !nativeInteractionCall &&
-      deps.permissionProfile !== 'devin' &&
-      deps.approval?.evaluateExternal !== undefined
+      !nativeInteractionCall && deps.permissionProfile !== 'devin' && deps.approval?.evaluateExternal !== undefined
     let agent = useExternalPolicy ? deps.getAgent() : undefined
     try {
       assertBounds(params.toolCall.toolCallId, params.options)
@@ -427,6 +425,103 @@ export function createAcpNativePermissionHandler(
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
+    // The native answer surfaces: the approval request when the option set is one
+    // allow (plus at most one reject), the question otherwise. Reached on a policy
+    // abstention, and directly when a policy escalates the call to a human.
+    const answerWithoutPolicy = async (): Promise<acp.RequestPermissionResponse> => {
+      if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
+        try {
+          const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
+          const outcome = await deps.approval.request({
+            agent,
+            toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
+            callId: params.toolCall.toolCallId,
+            ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
+            ...(commandLine === undefined ? {} : { commandLine }),
+            reason: [
+              nativePermissionReason(params.toolCall, copy),
+              `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,
+              ...(binary.reject === undefined ? [] : [`${copy.rejectOnce}: ${visibleCommand(binary.reject.name)}`]),
+            ].join('\n'),
+            ...(signal === undefined ? {} : { signal }),
+          })
+          if (outcome === 'allowed-once')
+            return decide(
+              { outcome: 'selected', optionId: binary.allow.optionId, selectedOptionKind: binary.allow.kind },
+              'native-approval',
+            )
+          if (outcome === 'rejected' && binary.reject !== undefined)
+            return decide(
+              { outcome: 'selected', optionId: binary.reject.optionId, selectedOptionKind: binary.reject.kind },
+              'native-approval',
+            )
+          return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
+        } catch (error: unknown) {
+          deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
+        }
+      }
+      if (nativeInteractionCall && !nativeInteractionQuestion && binary !== undefined)
+        return decide({ outcome: 'cancelled', note: 'native-approval-unavailable' }, 'native-approval')
+      const questions = nativeInteractionCall ? deps.userQuestions : (deps.permissionQuestions ?? deps.userQuestions)
+      if (questions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
+      const questionId = `acp-permission:${id}`
+      const renderedLabels = optionLabels(params.options, copy)
+      const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
+      try {
+        const detail = nativeInteractionQuestion
+          ? permissionQuestionDetail(params.toolCall, copy)
+          : permissionRequestDetail(params.toolCall)
+        const questionRequest = {
+          agent,
+          questions: [
+            {
+              id: questionId,
+              question: nativeInteractionQuestion
+                ? params.toolCall.title!
+                : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
+              ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
+              ...(detail === undefined ? {} : { detail }),
+              options: renderedLabels.map((label) => ({ label })),
+            },
+          ],
+          ...(signal === undefined ? {} : { signal }),
+        }
+        const answer =
+          questions === deps.permissionQuestions
+            ? await deps.permissionQuestions.ask(questionRequest, (value) => {
+                presentation = value
+              })
+            : await questions.ask(questionRequest)
+        if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
+        const selected = answer.answers.find((item) => item.id === questionId)
+        if (selected === undefined || selected.custom !== undefined || selected.selected.length !== 1)
+          return decide({
+            outcome: 'cancelled',
+            note: selected?.custom === undefined ? 'cancelled' : 'custom-option-unsupported',
+          })
+        const option = labels.get(selected.selected[0]!)
+        if (option === undefined) return decide({ outcome: 'cancelled', note: 'invalid-option-id' })
+        return decide({ outcome: 'selected', optionId: option.optionId, selectedOptionKind: option.kind })
+      } catch (error: unknown) {
+        if (signal?.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
+        if (recordValue(error)?.code === 'DELEGATED_CALLER') {
+          try {
+            await deps.onUnavailable?.({
+              code: 'ACP_DELEGATED_QUESTION_UNAVAILABLE',
+              message: nativeInteractionQuestion
+                ? copy.delegatedQuestionUnavailable
+                : copy.delegatedPermissionUnavailable,
+            })
+          } catch (reportError: unknown) {
+            deps.log?.(`dsh-acp unavailable permission reporting failed: ${errorMessage(reportError)}`)
+          }
+          return decide({ outcome: 'cancelled', note: 'delegated-question-unavailable' })
+        }
+        deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`)
+        return decide({ outcome: 'cancelled', note: 'question-error' })
+      }
+    }
+
     if (useExternalPolicy) {
       let outcome: AcpExternalPolicyDecision
       try {
@@ -440,8 +535,12 @@ export function createAcpNativePermissionHandler(
       } catch {
         outcome = 'failed'
       }
+      // A policy escalated this request to a human: the machine chain stops here and
+      // the native surfaces answer, so the next provider never authorizes it.
+      if (outcome === 'ask') return answerWithoutPolicy()
       // Defensive normalization also covers non-TypeScript policy integrations.
-      if (!['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'].includes(outcome)) outcome = 'failed'
+      if (!['allow-once', 'deny-once', 'ask', 'not-applicable', 'cancelled', 'failed'].includes(outcome))
+        outcome = 'failed'
       if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
       if (outcome === 'failed') {
         try {
@@ -469,100 +568,6 @@ export function createAcpNativePermissionHandler(
           return decide({ outcome: 'cancelled', note: 'policy-deny-unrepresentable' }, 'external-policy')
       }
     }
-
-    if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
-      try {
-        const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
-        const outcome = await deps.approval.request({
-          agent,
-          toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
-          callId: params.toolCall.toolCallId,
-          ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
-          ...(commandLine === undefined ? {} : { commandLine }),
-          reason: [
-            nativePermissionReason(params.toolCall, copy),
-            `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,
-            ...(binary.reject === undefined ? [] : [`${copy.rejectOnce}: ${visibleCommand(binary.reject.name)}`]),
-          ].join('\n'),
-          ...(signal === undefined ? {} : { signal }),
-        })
-        if (outcome === 'allowed-once')
-          return decide(
-            { outcome: 'selected', optionId: binary.allow.optionId, selectedOptionKind: binary.allow.kind },
-            'native-approval',
-          )
-        if (outcome === 'rejected' && binary.reject !== undefined)
-          return decide(
-            { outcome: 'selected', optionId: binary.reject.optionId, selectedOptionKind: binary.reject.kind },
-            'native-approval',
-          )
-        return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
-      } catch (error: unknown) {
-        deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
-        // Continue to the generic native question only when it is available;
-        // this preserves uncommon ACP option vocabularies without reviving a
-        // plugin-owned permission surface.
-      }
-    }
-    if (nativeInteractionCall && !nativeInteractionQuestion && binary !== undefined)
-      return decide({ outcome: 'cancelled', note: 'native-approval-unavailable' }, 'native-approval')
-    const questions = nativeInteractionCall ? deps.userQuestions : (deps.permissionQuestions ?? deps.userQuestions)
-    if (questions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
-    const questionId = `acp-permission:${id}`
-    const renderedLabels = optionLabels(params.options, copy)
-    const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
-    try {
-      const detail = nativeInteractionQuestion
-        ? permissionQuestionDetail(params.toolCall, copy)
-        : permissionRequestDetail(params.toolCall)
-      const questionRequest = {
-        agent,
-        questions: [
-          {
-            id: questionId,
-            question: nativeInteractionQuestion
-              ? params.toolCall.title!
-              : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
-            ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
-            ...(detail === undefined ? {} : { detail }),
-            options: renderedLabels.map((label) => ({ label })),
-          },
-        ],
-        ...(signal === undefined ? {} : { signal }),
-      }
-      const answer =
-        questions === deps.permissionQuestions
-          ? await deps.permissionQuestions.ask(questionRequest, (value) => {
-              presentation = value
-            })
-          : await questions.ask(questionRequest)
-      if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
-      const selected = answer.answers.find((item) => item.id === questionId)
-      if (selected === undefined || selected.custom !== undefined || selected.selected.length !== 1)
-        return decide({
-          outcome: 'cancelled',
-          note: selected?.custom === undefined ? 'cancelled' : 'custom-option-unsupported',
-        })
-      const option = labels.get(selected.selected[0]!)
-      if (option === undefined) return decide({ outcome: 'cancelled', note: 'invalid-option-id' })
-      return decide({ outcome: 'selected', optionId: option.optionId, selectedOptionKind: option.kind })
-    } catch (error: unknown) {
-      if (signal?.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
-      if (recordValue(error)?.code === 'DELEGATED_CALLER') {
-        try {
-          await deps.onUnavailable?.({
-            code: 'ACP_DELEGATED_QUESTION_UNAVAILABLE',
-            message: nativeInteractionQuestion
-              ? copy.delegatedQuestionUnavailable
-              : copy.delegatedPermissionUnavailable,
-          })
-        } catch (reportError: unknown) {
-          deps.log?.(`dsh-acp unavailable permission reporting failed: ${errorMessage(reportError)}`)
-        }
-        return decide({ outcome: 'cancelled', note: 'delegated-question-unavailable' })
-      }
-      deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`)
-      return decide({ outcome: 'cancelled', note: 'question-error' })
-    }
+    return answerWithoutPolicy()
   }
 }

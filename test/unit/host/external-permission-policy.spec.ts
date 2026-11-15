@@ -62,7 +62,7 @@ describe('explicit ACP machine policy contract', () => {
     expect(legacy).not.toHaveBeenCalled()
   })
 
-  it.each(['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'] as const)(
+  it.each(['allow-once', 'deny-once', 'ask', 'not-applicable', 'cancelled', 'failed'] as const)(
     'preserves the declared %s decision without mapping option IDs',
     async (decision) => {
       const f = await fixture()
