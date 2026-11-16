@@ -75,7 +75,7 @@ async function fixture({ service = true, profile = 'antigravity', policy = 'ask'
   const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
     answers: [{ id: questions[0]!.id, selected: ['Always allow'] }],
   }))
-  const legacy = vi.fn(async () => 'allowed-once' as const)
+  const legacy = vi.fn(async (_request: unknown) => 'allowed-once' as const)
   ctx.on('approval/request', legacy)
   const notify = vi.fn(async (_issue: AcpNativeQuestionUnavailable): Promise<void> => {})
   const deps = {
@@ -229,31 +229,52 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.ask).toHaveBeenCalledOnce()
   })
 
-  it('ask carries the policy reason into the native approval request', async () => {
-    const f = await fixture()
+  it.each(['ask', 'never'])('ask carries its reason into binary approval under %s', async (policy) => {
+    const f = await fixture({ policy })
     f.ctx.on('dsh-acp/permission-policy', async () => ({ decision: 'ask', reason: 'gate says no' }))
-    expect(await f.handle()).toEqual(selected('once'))
+    const input = request()
+    input.options = [input.options[0]!, input.options[2]!]
+    expect(await f.handle(input)).toEqual(selected('once'))
     expect(f.legacy).toHaveBeenCalledOnce()
-    const passed = f.legacy.mock.calls[0]![0] as {
-      reason?: string
-      displayReason?: { en: string }
-    }
-    expect(passed.reason ?? '<missing>').toContain('gate says no')
-    // The card title reads displayReason first; ACP cannot project one from a tool call.
-    expect(passed.displayReason?.en).toContain('gate says no')
+    expect(f.legacy.mock.calls[0]![0]).toMatchObject({
+      reason: expect.stringContaining('gate says no'),
+      displayReason: { en: expect.stringContaining('gate says no') },
+    })
     expect(decided(f.records).decisionVia).toBe('native-approval')
   })
 
-  it('ask ends the machine chain in the native approval window, not in Agent options', async () => {
+  it.each(['ask', { decision: 'ask', reason: 'sandbox needs confirmation' }] as const)(
+    'ask %j ends the machine chain and preserves the full human choices',
+    async (decision) => {
+      const f = await fixture()
+      const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
+      f.ctx.on('dsh-acp/permission-policy', async () => decision, { prepend: true })
+      f.ctx.on('dsh-acp/permission-policy', later)
+      expect(await f.handle()).toEqual(selected('always'))
+      expect(later).not.toHaveBeenCalled()
+      expect(f.legacy).not.toHaveBeenCalled()
+      const question = f.ask.mock.calls[0]![0].questions[0]!
+      expect(question.options).toEqual(request().options.map(({ name }) => ({ label: name })))
+      expect(question.question).toContain('printf fixture-only')
+      if (typeof decision === 'object') expect(question.question).toContain(decision.reason)
+      expect(decided(f.records).decisionVia).toBe('native-question')
+    },
+  )
+
+  it('keeps the ask reason when binary approval throws and falls back to a question', async () => {
     const f = await fixture()
-    const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
-    f.ctx.on('dsh-acp/permission-policy', async () => 'ask', { prepend: true })
-    f.ctx.on('dsh-acp/permission-policy', later)
-    expect(await f.handle()).toEqual(selected('once'))
-    expect(later).not.toHaveBeenCalled()
-    expect(f.ask).not.toHaveBeenCalled()
-    expect(f.legacy).toHaveBeenCalledOnce()
-    expect(decided(f.records).decisionVia).toBe('native-approval')
+    f.ctx.on('dsh-acp/permission-policy', async () => ({ decision: 'ask', reason: 'sandbox needs confirmation' }))
+    f.deps.approval.request = async () => {
+      throw new Error('approval offline')
+    }
+    f.ask.mockImplementationOnce(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['Allow once'] }],
+    }))
+    const input = request()
+    input.options = [input.options[0]!, input.options[2]!]
+    expect(await f.handle(input)).toEqual(selected('once'))
+    expect(f.ask.mock.calls[0]![0].questions[0]!.question).toContain('sandbox needs confirmation')
+    expect(decided(f.records).decisionVia).toBe('native-question')
   })
 
   it('ask with binary approval options asks natively instead of falling through', async () => {

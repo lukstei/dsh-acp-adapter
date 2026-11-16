@@ -62,7 +62,9 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
               {
                 toolName: request.toolName,
                 ...(request.callId === undefined ? {} : { callId: request.callId as ToolCallId }),
-                ...(request.reason === undefined ? {} : { reason: request.reason }),
+                ...(request.reason === undefined
+                  ? {}
+                  : { reason: request.reason, displayReason: { en: request.reason } }),
                 ...(signal === undefined ? {} : { signal }),
                 ...(request.toolArgs === undefined ? {} : { toolArgs: request.toolArgs }),
                 ...(request.commandLine === undefined ? {} : { commandLine: request.commandLine }),

@@ -425,47 +425,8 @@ export function createAcpNativePermissionHandler(
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
-    // An escalated call is answered in the native approval window, not in the Agent's
-    // permission options: its reason, chrome and audit are the native ones, and only
-    // the resulting once-answer is mapped back onto the Agent's option IDs.
-    const answerWithNativeApproval = async (policyReason?: string): Promise<acp.RequestPermissionResponse> => {
-      const allow = params.options.find((option) => option.kind === 'allow_once')
-      const reject = params.options.find((option) => option.kind === 'reject_once')
-      if (deps.approval !== undefined && allow !== undefined) {
-        try {
-          const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
-          const outcome = await deps.approval.request({
-            agent,
-            toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
-            callId: params.toolCall.toolCallId,
-            ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
-            ...(commandLine === undefined ? {} : { commandLine }),
-            ...(policyReason === undefined
-              ? {}
-              : { reason: `${visibleCommand(policyReason)}\n\n${nativePermissionReason(params.toolCall, copy)}` }),
-            ...(signal === undefined ? {} : { signal }),
-          })
-          if (outcome === 'allowed-once')
-            return decide(
-              { outcome: 'selected', optionId: allow.optionId, selectedOptionKind: allow.kind },
-              'native-approval',
-            )
-          if (outcome === 'rejected' && reject !== undefined)
-            return decide(
-              { outcome: 'selected', optionId: reject.optionId, selectedOptionKind: reject.kind },
-              'native-approval',
-            )
-          return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
-        } catch (error: unknown) {
-          deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
-        }
-      }
-      return answerWithoutPolicy()
-    }
-
-    // The native answer surfaces on a policy abstention: the approval request when the
-    // option set is one allow plus at most one reject, the permission question otherwise.
-    const answerWithoutPolicy = async (): Promise<acp.RequestPermissionResponse> => {
+    // Reuse the existing human surfaces: binary approval or the complete permission choices.
+    const answerWithoutPolicy = async (policyReason?: string): Promise<acp.RequestPermissionResponse> => {
       if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
         try {
           const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
@@ -476,6 +437,7 @@ export function createAcpNativePermissionHandler(
             ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
             ...(commandLine === undefined ? {} : { commandLine }),
             reason: [
+              ...(policyReason === undefined ? [] : [visibleCommand(policyReason)]),
               nativePermissionReason(params.toolCall, copy),
               `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,
               ...(binary.reject === undefined ? [] : [`${copy.rejectOnce}: ${visibleCommand(binary.reject.name)}`]),
@@ -513,9 +475,12 @@ export function createAcpNativePermissionHandler(
           questions: [
             {
               id: questionId,
-              question: nativeInteractionQuestion
-                ? params.toolCall.title!
-                : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
+              question: [
+                ...(policyReason === undefined ? [] : [visibleCommand(policyReason)]),
+                nativeInteractionQuestion
+                  ? params.toolCall.title!
+                  : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
+              ].join('\n\n'),
               ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
               ...(detail === undefined ? {} : { detail }),
               options: renderedLabels.map((label) => ({ label })),
@@ -572,14 +537,12 @@ export function createAcpNativePermissionHandler(
       } catch {
         outcome = 'failed'
       }
-      // A policy escalated this request to a human: the machine chain stops here and
-      // the native approval window answers it, so the next provider never sees the call.
-      // A policy-supplied reason leads the window; it is the one line explaining why.
-      if (outcome === 'ask') return answerWithNativeApproval()
-      if (typeof outcome === 'object') return answerWithNativeApproval(outcome.reason)
+      if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
+      // An ask stops machine evaluation and preserves the original human choices.
+      if (outcome === 'ask') return answerWithoutPolicy()
+      if (typeof outcome === 'object') return answerWithoutPolicy(outcome.reason)
       // Defensive normalization also covers non-TypeScript policy integrations.
       if (!['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'].includes(outcome)) outcome = 'failed'
-      if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
       if (outcome === 'failed') {
         try {
           await deps.onUnavailable?.({

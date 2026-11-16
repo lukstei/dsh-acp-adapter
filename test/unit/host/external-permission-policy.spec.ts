@@ -71,14 +71,30 @@ describe('explicit ACP machine policy contract', () => {
     },
   )
 
-  it.each(['allow-always', '', undefined, null, true, { outcome: 'allow-once' }])(
-    'fails closed for invalid provider result %j',
-    async (decision) => {
-      const f = await fixture()
-      f.ctx.on('dsh-acp/permission-policy', async () => decision as AcpExternalPolicyDecision)
-      expect(await f.service.evaluate(f.request)).toBe('failed')
-    },
-  )
+  it('preserves an ask reason and stops later providers', async () => {
+    const f = await fixture()
+    const decision = { decision: 'ask', reason: 'sandbox needs confirmation' } as const
+    const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
+    f.ctx.on('dsh-acp/permission-policy', async () => decision, { prepend: true })
+    f.ctx.on('dsh-acp/permission-policy', later)
+    expect(await f.service.evaluate(f.request)).toEqual(decision)
+    expect(later).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'allow-always',
+    '',
+    undefined,
+    null,
+    true,
+    { outcome: 'allow-once' },
+    { decision: 'ask' },
+    { decision: 'ask', reason: 1 },
+  ])('fails closed for invalid provider result %j', async (decision) => {
+    const f = await fixture()
+    f.ctx.on('dsh-acp/permission-policy', async () => decision as AcpExternalPolicyDecision)
+    expect(await f.service.evaluate(f.request)).toBe('failed')
+  })
 
   it('contains provider exceptions without exposing their details', async () => {
     const f = await fixture()

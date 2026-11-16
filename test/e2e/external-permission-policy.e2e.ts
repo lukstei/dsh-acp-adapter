@@ -205,6 +205,7 @@ it('isolates concurrent machine decisions while preserving the original full par
     if (callId === 'parent-scope-machine-allow') return 'allow-once'
     if (callId === 'parent-scope-machine-deny') return 'deny-once'
     if (callId === 'parent-scope-machine-failed') throw new Error('Controlled policy backend failure')
+    if (callId === 'parent-scope-manual') return { decision: 'ask', reason: 'SANDBOX_REASON: confirm fixture write' }
     return next()
   })
   try {
@@ -246,9 +247,11 @@ it('isolates concurrent machine decisions while preserving the original full par
     expect(await card.getByRole('radio').count()).toBe(PARENT_PERMISSION_OPTIONS.length)
     expect(await card.locator('[data-question-source]').innerText()).toContain(manual.child.id.slice(0, 8))
     expect(world.effects('manual')).toEqual([])
+    expect(await card.innerText()).toContain('SANDBOX_REASON: confirm fixture write')
     await world.save('manual-pending-wide', { calls, legacyCalls })
     await world.page.reload()
     await card.getByRole('radio', { name: 'Reject', exact: true }).waitFor()
+    expect(await card.innerText()).toContain('SANDBOX_REASON: confirm fixture write')
     for (const option of PARENT_PERMISSION_OPTIONS)
       expect(await card.getByRole('radio', { name: option.name, exact: true }).count()).toBe(1)
     expect(acpPermissionAudit(world, 'asked')).toHaveLength(4)
