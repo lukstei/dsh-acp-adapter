@@ -229,65 +229,18 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.ask).toHaveBeenCalledOnce()
   })
 
-  it.each(['ask', 'never'])('ask carries its reason into binary approval under %s', async (policy) => {
-    const f = await fixture({ policy })
-    f.ctx.on('dsh-acp/permission-policy', async () => ({ decision: 'ask', reason: 'gate says no' }))
-    const input = request()
-    input.options = [input.options[0]!, input.options[2]!]
-    expect(await f.handle(input)).toEqual(selected('once'))
-    expect(f.legacy).toHaveBeenCalledOnce()
-    expect(f.legacy.mock.calls[0]![0]).toMatchObject({
-      reason: expect.stringContaining('gate says no'),
-      displayReason: { en: expect.stringContaining('gate says no') },
-    })
-    expect(decided(f.records).decisionVia).toBe('native-approval')
-  })
-
-  it.each(['ask', { decision: 'ask', reason: 'sandbox needs confirmation' }] as const)(
-    'ask %j ends the machine chain and preserves the full human choices',
-    async (decision) => {
-      const f = await fixture()
-      const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
-      f.ctx.on('dsh-acp/permission-policy', async () => decision, { prepend: true })
-      f.ctx.on('dsh-acp/permission-policy', later)
-      expect(await f.handle()).toEqual(selected('always'))
-      expect(later).not.toHaveBeenCalled()
-      expect(f.legacy).not.toHaveBeenCalled()
-      const question = f.ask.mock.calls[0]![0].questions[0]!
-      expect(question.options).toEqual(request().options.map(({ name }) => ({ label: name })))
-      expect(question.question).toContain('printf fixture-only')
-      if (typeof decision === 'object') expect(question.question).toContain(decision.reason)
-      expect(decided(f.records).decisionVia).toBe('native-question')
-    },
-  )
-
-  it('keeps the ask reason when binary approval throws and falls back to a question', async () => {
-    const f = await fixture()
-    f.ctx.on('dsh-acp/permission-policy', async () => ({ decision: 'ask', reason: 'sandbox needs confirmation' }))
-    f.deps.approval.request = async () => {
-      throw new Error('approval offline')
-    }
-    f.ask.mockImplementationOnce(async ({ questions }) => ({
-      answers: [{ id: questions[0]!.id, selected: ['Allow once'] }],
-    }))
-    const input = request()
-    input.options = [input.options[0]!, input.options[2]!]
-    expect(await f.handle(input)).toEqual(selected('once'))
-    expect(f.ask.mock.calls[0]![0].questions[0]!.question).toContain('sandbox needs confirmation')
-    expect(decided(f.records).decisionVia).toBe('native-question')
-  })
-
-  it('ask with binary approval options asks natively instead of falling through', async () => {
+  it('terminal not-applicable stops later providers and preserves the complete human choices', async () => {
     const f = await fixture()
     const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
-    f.ctx.on('dsh-acp/permission-policy', async () => 'ask', { prepend: true })
+    f.ctx.on('dsh-acp/permission-policy', async () => 'not-applicable', { prepend: true })
     f.ctx.on('dsh-acp/permission-policy', later)
-    const input = request()
-    input.options = [input.options[0]!, input.options[2]!]
-    expect(await f.handle(input)).toEqual(selected('once'))
+    expect(await f.handle()).toEqual(selected('always'))
     expect(later).not.toHaveBeenCalled()
-    expect(f.legacy).toHaveBeenCalledOnce()
-    expect(decided(f.records).decisionVia).toBe('native-approval')
+    expect(f.legacy).not.toHaveBeenCalled()
+    const question = f.ask.mock.calls[0]![0].questions[0]!
+    expect(question.options).toEqual(request().options.map(({ name }) => ({ label: name })))
+    expect(question.question).toContain('printf fixture-only')
+    expect(decided(f.records).decisionVia).toBe('native-question')
   })
 
   it('evaluates binary approval options through machine policy and falls back to native approval on not-applicable', async () => {

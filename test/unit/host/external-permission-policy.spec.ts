@@ -62,7 +62,7 @@ describe('explicit ACP machine policy contract', () => {
     expect(legacy).not.toHaveBeenCalled()
   })
 
-  it.each(['allow-once', 'deny-once', 'ask', 'not-applicable', 'cancelled', 'failed'] as const)(
+  it.each(['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'] as const)(
     'preserves the declared %s decision without mapping option IDs',
     async (decision) => {
       const f = await fixture()
@@ -71,18 +71,10 @@ describe('explicit ACP machine policy contract', () => {
     },
   )
 
-  it('preserves an ask reason and stops later providers', async () => {
-    const f = await fixture()
-    const decision = { decision: 'ask', reason: 'sandbox needs confirmation' } as const
-    const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
-    f.ctx.on('dsh-acp/permission-policy', async () => decision, { prepend: true })
-    f.ctx.on('dsh-acp/permission-policy', later)
-    expect(await f.service.evaluate(f.request)).toEqual(decision)
-    expect(later).not.toHaveBeenCalled()
-  })
-
   it.each([
     'allow-always',
+    'ask',
+    { decision: 'ask', reason: 'unsupported policy result' },
     '',
     undefined,
     null,
