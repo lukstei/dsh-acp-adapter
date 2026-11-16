@@ -316,8 +316,8 @@ for (const policy of ['ask', 'never'] as const) {
     const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ agent, questions }) => {
       expect(agent).toBe(f.agent)
       expect(questions[0]!.options).toEqual(options.map(({ name }) => ({ label: name })))
-      expect(questions[0]!.question).toContain('printf APPROVAL_PROBE')
-      expect(questions[0]!.question).toContain('/workspace')
+      expect(questions[0]!.detail).toContain('printf APPROVAL_PROBE')
+      expect(questions[0]!.detail).toContain('/workspace')
       return { answers: [{ id: questions[0]!.id, selected: [selected.name] }] }
     })
     try {

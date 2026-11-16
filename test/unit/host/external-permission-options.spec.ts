@@ -239,7 +239,7 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.legacy).not.toHaveBeenCalled()
     const question = f.ask.mock.calls[0]![0].questions[0]!
     expect(question.options).toEqual(request().options.map(({ name }) => ({ label: name })))
-    expect(question.question).toContain('printf fixture-only')
+    expect(question.detail).toContain('printf fixture-only')
     expect(decided(f.records).decisionVia).toBe('native-question')
   })
 

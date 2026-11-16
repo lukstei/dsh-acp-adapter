@@ -413,17 +413,21 @@ it.each(['en', 'zh'] as const)(
       const card = page.locator('section[data-question-key]')
       await card.waitFor()
       const operation = card.locator('[data-question-operation]')
-      const expected = [
-        `${locale === 'zh' ? '命令' : 'Command'}: ${wireInput.CommandLine}`,
-        `${locale === 'zh' ? '工作目录' : 'Working directory'}: ${wireInput.Cwd}`,
+      await expect
+        .poll(() => operation.innerText())
+        .toBe(locale === 'zh' ? '是否允许执行此命令？' : 'Allow this command to run?')
+      const evidence = card.locator('[data-question-detail]')
+      expect(await evidence.innerText()).toContain(wireInput.CommandLine)
+      expect(await evidence.innerText()).toContain(wireInput.Cwd)
+      expect(await evidence.innerText()).toContain(
         locale === 'zh' ? '转入后台前等待: 5000 毫秒' : 'Wait before backgrounding: 5000 ms',
-      ].join('\n')
-      await expect.poll(() => operation.innerText()).toBe(expected)
+      )
+      expect(await evidence.locator('code').allTextContents()).toEqual([wireInput.CommandLine, wireInput.Cwd])
       const disclosure = card.getByRole('button', {
         name: locale === 'zh' ? '请求详情' : 'Request details',
         exact: true,
       })
-      expect(await disclosure.getAttribute('aria-expanded')).toBe('false')
+      expect(await disclosure.getAttribute('aria-expanded')).toBe('true')
       expect(
         await card
           .getByRole('radio')
@@ -441,8 +445,11 @@ it.each(['en', 'zh'] as const)(
         await page.screenshot({ path: join(directory, `${theme}-1680-pending.png`), animations: 'disabled' })
       }
       await disclosure.click()
+      expect(await disclosure.getAttribute('aria-expanded')).toBe('false')
+      expect(await evidence.count()).toBe(0)
+      await disclosure.click()
       expect(await disclosure.getAttribute('aria-expanded')).toBe('true')
-      expect(JSON.parse(await card.locator('[data-question-detail] code').innerText())).toEqual({ rawInput: original })
+      expect(await evidence.locator('code').allTextContents()).toEqual([wireInput.CommandLine, wireInput.Cwd])
       await page.screenshot({ path: join(directory, 'details-1680.png'), animations: 'disabled' })
       await page.setViewportSize({ width: 390, height: 800 })
       const bounds = await card.evaluate((element) => {

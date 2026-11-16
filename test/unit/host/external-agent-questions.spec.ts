@@ -165,7 +165,8 @@ describe('external permission root presentation', () => {
       const nativeAsk = vi.fn(async (request: Parameters<AcpNativeUserQuestionService['ask']>[0]) => {
         expect(request.agent).toBe(f.root)
         expect(request.questions[0]?.header).toBe('子会话授权: Worker child · child')
-        expect(request.questions[0]?.question).toBe('Command: echo complete')
+        expect(request.questions[0]?.question).toBe('Allow this command to run?')
+        expect(request.questions[0]?.detail).toContain('Command:\n\n```\necho complete\n```')
         expect(request.questions[0]?.detail).toContain('Worker child (child)')
         return { answers: [{ id: request.questions[0]!.id, selected: [request.questions[0]!.options![1]!.label] }] }
       })

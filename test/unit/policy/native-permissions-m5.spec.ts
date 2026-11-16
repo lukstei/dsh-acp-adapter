@@ -81,8 +81,8 @@ describe('native ACP permission bridge', () => {
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'r' } })
     expect(ask.mock.calls[0]?.[0].questions[0]).toMatchObject({
       header: '授权请求',
-      question: 'Run command\n命令: echo hello',
-      detail: '```\n{\n  "rawInput": {\n    "command": "echo hello"\n  }\n}\n```',
+      question: '是否允许执行此命令？',
+      detail: '```\nRun command\n```\n\n命令:\n\n```\necho hello\n```',
       options: [{ label: 'Same · 选项 1' }, { label: 'Same · 选项 2' }],
     })
   })
@@ -197,7 +197,7 @@ describe('native ACP permission bridge', () => {
     expect(reason).toContain(typeof description === 'string' ? description : description.scope)
   })
 
-  it('shows execute description prose and retains its raw field in complete-choice request details', async () => {
+  it('shows execute description once alongside the complete command', async () => {
     const { handler, ask } = bridge('Allow this session')
     await handler({
       ...params([option('once', 'Allow once', 'allow_once'), option('session', 'Allow this session', 'allow_always')]),
@@ -208,10 +208,10 @@ describe('native ACP permission bridge', () => {
       },
     })
     const question = ask.mock.calls[0]![0].questions[0]!
-    expect(question.question).toContain('Verify native command approval')
+    expect(question.detail).toContain('Verify native command approval')
     expect(question.question).not.toContain('"description"')
-    expect(question.detail).toContain('"description": "Verify native command approval"')
-    expect(question.detail).toContain('"command": "printf exact-command"')
+    expect(question.detail).not.toContain('"description"')
+    expect(question.detail).toContain('printf exact-command')
   })
 
   it('keeps every Codex additional permission scope on the native question and returns the chosen scope', async () => {
@@ -641,10 +641,10 @@ describe('native ACP permission bridge', () => {
 
     const question = ask.mock.calls[0]?.[0].questions[0]
     expect(question?.header).toBe('Permission request')
-    expect(question?.question).toContain(command.slice(0, -5))
-    expect(question?.question).toContain('\\x1b[31m')
-    expect(question?.question).not.toContain('\u001b')
-    expect(question?.question).not.toContain('…')
+    expect(question?.detail).toContain(command.slice(0, -5))
+    expect(question?.detail).toContain('\\x1b[31m')
+    expect(question?.detail).not.toContain('\u001b')
+    expect(question?.detail).not.toContain('…')
   })
 })
 

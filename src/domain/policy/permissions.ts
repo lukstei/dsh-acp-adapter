@@ -210,29 +210,17 @@ function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], 
     .join('\n')
 }
 /** Keep targets and unknown scope visible; verified Team task prose stays in raw-request details. */
-function permissionQuestionFacts(
-  tool: acp.RequestPermissionRequest['toolCall'],
-  copy: PermissionCopy,
-  profile?: AcpNativeQuestionProfile,
-): string {
-  const command = tool.kind === 'execute' ? commandOf(tool) : undefined
+function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
   const title = tool.title ?? tool.name
   const lines: string[] = []
-  if (typeof title === 'string' && title.trim() !== '' && title !== command) lines.push(visibleCommand(title))
-  else if (command === undefined) lines.push(copy.actions[tool.kind ?? ''] ?? copy.restrictedOperation)
-  if (tool.kind === 'execute') {
-    lines.push(command === undefined ? copy.unknownCommand : `${copy.command}: ${visibleCommand(command)}`)
-  }
+  if (typeof title === 'string' && title.trim() !== '') lines.push(visibleCommand(title))
+  else lines.push(copy.actions[tool.kind ?? ''] ?? copy.restrictedOperation)
 
   let input = tool.rawInput
   const record = recordValue(input)
   if (record !== undefined) {
     const team = (tool as { readonly [dshTeamPresentation]?: DshTeamPermissionPresentation })[dshTeamPresentation]
     const presented = new Set<string>()
-    if (tool.kind === 'execute' && typeof record.description === 'string') {
-      lines.push(visibleCommand(record.description))
-      presented.add('description')
-    }
     const field = (key: string, label: string): boolean => {
       const value = record[key]
       if (typeof value !== 'string' || value.trim() === '') return false
@@ -251,23 +239,8 @@ function permissionQuestionFacts(
     } else if (team?.tool === 'send_message' && field('target', copy.recipient)) {
       if (typeof record.message === 'string') presented.add('message')
     }
-    const commandKey = command === undefined ? undefined : commandKeys.find((key) => record[key] === command)
     const directory = typeof record.cwd === 'string' ? record.cwd : undefined
     if (directory !== undefined) lines.push(`${copy.directory}: ${visibleCommand(directory)}`)
-    if (profile === 'antigravity' && tool.kind === 'execute') {
-      // Presentation normalization retains the wire fields beside command/cwd.
-      // Only remove exact duplicates; conflicting values remain approval facts.
-      if (command !== undefined && record.command === command && record.CommandLine === command)
-        presented.add('CommandLine')
-      if (directory !== undefined && directory.trim() !== '' && record.Cwd === directory) presented.add('Cwd')
-      const wait = record.WaitMsBeforeAsync
-      // Antigravity's run_command schema defines a synchronous wait before
-      // backgrounding, up to 10000 ms; this is not a command execution deadline.
-      if (typeof wait === 'number' && Number.isInteger(wait) && wait >= 0 && wait <= 10_000) {
-        lines.push(copy.backgroundWait(wait))
-        presented.add('WaitMsBeforeAsync')
-      }
-    }
     const fileContent = typeof record.file_path === 'string' && typeof record.content === 'string'
     if (fileContent) {
       lines.push(`${copy.filePath}: ${visibleCommand(record.file_path as string)}`)
@@ -276,15 +249,12 @@ function permissionQuestionFacts(
     const remaining = Object.fromEntries(
       Object.entries(record).filter(
         ([key]) =>
-          key !== commandKey &&
           !presented.has(key) &&
           !(key === 'cwd' && directory !== undefined) &&
           !(fileContent && (key === 'file_path' || key === 'content')),
       ),
     )
     input = Object.keys(remaining).length === 0 ? undefined : remaining
-  } else if (command !== undefined) {
-    input = undefined
   }
   if (tool.locations != null && tool.locations.length > 0) {
     lines.push(
@@ -305,6 +275,56 @@ function permissionRequestDetail(tool: acp.RequestPermissionRequest['toolCall'])
   return markdownCodeBlock(
     visibleCommand(JSON.stringify({ rawInput: tool.rawInput, locations: tool.locations }, null, 2)),
   )
+}
+/** Keep command evidence in rendered detail, separate from the short question heading. */
+function commandPermissionDetail(
+  tool: acp.RequestPermissionRequest['toolCall'],
+  copy: PermissionCopy,
+  profile: AcpNativeQuestionProfile | undefined,
+): string {
+  const command = commandOf(tool)
+  const record = recordValue(tool.rawInput)
+  const parts: string[] = []
+  const title = tool.title ?? tool.name
+  if (typeof title === 'string' && title !== command && title.trim() !== '')
+    parts.push(markdownCodeBlock(visibleCommand(title)))
+  parts.push(
+    command === undefined ? copy.unknownCommand : copy.command + ':\n\n' + markdownCodeBlock(visibleCommand(command)),
+  )
+  const presented = new Set<string>()
+  const commandKey = commandKeys.find((key) => record?.[key] === command && command !== undefined)
+  if (commandKey !== undefined) presented.add(commandKey)
+  if (typeof record?.description === 'string') {
+    parts.push(markdownCodeBlock(visibleCommand(record.description)))
+    presented.add('description')
+  }
+  const directory =
+    typeof record?.cwd === 'string'
+      ? record.cwd
+      : profile === 'antigravity' && typeof record?.Cwd === 'string'
+        ? record.Cwd
+        : undefined
+  if (directory !== undefined) {
+    parts.push(copy.directory + ':\n\n' + markdownCodeBlock(visibleCommand(directory)))
+    if (record?.cwd === directory) presented.add('cwd')
+  }
+  if (profile === 'antigravity' && record !== undefined) {
+    if (command !== undefined && record.CommandLine === command) presented.add('CommandLine')
+    if (directory !== undefined && record.Cwd === directory) presented.add('Cwd')
+    const wait = record.WaitMsBeforeAsync
+    if (typeof wait === 'number' && Number.isInteger(wait) && wait >= 0 && wait <= 10_000) {
+      parts.push(copy.backgroundWait(wait))
+      presented.add('WaitMsBeforeAsync')
+    }
+  }
+  let remaining: unknown = tool.rawInput
+  if (record !== undefined) {
+    const rest = Object.fromEntries(Object.entries(record).filter(([key]) => !presented.has(key)))
+    remaining = Object.keys(rest).length === 0 ? undefined : rest
+  } else if (command !== undefined) remaining = undefined
+  const detail = permissionRequestDetail({ ...tool, rawInput: remaining })
+  if (detail !== undefined) parts.push(copy.details + ':\n\n' + detail)
+  return parts.join('\n\n')
 }
 function requestId(): string {
   return `dsh-acp-permission-${randomUUID()}`
@@ -512,7 +532,9 @@ export function createAcpNativePermissionHandler(
     try {
       const detail = nativeInteractionQuestion
         ? permissionQuestionDetail(params.toolCall, copy)
-        : permissionRequestDetail(params.toolCall)
+        : params.toolCall.kind === 'execute'
+          ? commandPermissionDetail(params.toolCall, copy, deps.nativeQuestionProfile)
+          : permissionRequestDetail(params.toolCall)
       const questionRequest = {
         agent,
         questions: [
@@ -520,7 +542,9 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
+              : params.toolCall.kind === 'execute'
+                ? copy.commandQuestion
+                : permissionQuestionFacts(params.toolCall, copy),
             ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),

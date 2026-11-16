@@ -286,7 +286,7 @@ async function assertChoices(
   const source = await card.locator('[data-question-source]').innerText()
   expect(source).toContain(child.id.slice(0, 8))
   expect(source).toContain(`Permission worker ${key}`)
-  expect(await card.locator('[data-question-operation]').innerText()).toContain(expectedOperation)
+  expect(await card.innerText()).toContain(expectedOperation)
   expect(world.effects(key)).toEqual([])
   expect(world.ctx.approval.overrideOf(child.session)).toBe('never')
   await expect
@@ -313,12 +313,12 @@ async function choose(world: World, key: string, optionId: string) {
   await card.getByRole('button', { name: world.submitLabel, exact: true }).click()
 }
 
-/** The initial approval view must show the operation and every choice together, without a screenshot-only scroll. */
+/** The compact view keeps every choice together after the user collapses evidence. */
 async function saveOptions(world: World, key: string, name: string) {
   const card = world.card(key)
-  expect(await card.getByRole('button', { name: world.detailsLabel, exact: true }).getAttribute('aria-expanded')).toBe(
-    'false',
-  )
+  const details = card.getByRole('button', { name: world.detailsLabel, exact: true })
+  if ((await details.getAttribute('aria-expanded')) === 'true') await details.click()
+  expect(await details.getAttribute('aria-expanded')).toBe('false')
   expect(await card.locator('[data-question-detail]').count()).toBe(0)
   await expect
     .poll(() =>
@@ -349,7 +349,7 @@ async function saveOptions(world: World, key: string, name: string) {
     )
     .toBe(true)
   await world.save(name, {
-    defaultView: true,
+    defaultView: false,
     operation: await card.locator('[data-question-operation]').innerText(),
     optionIds: PARENT_PERMISSION_OPTIONS.map((option) => option.optionId),
   })
@@ -366,7 +366,7 @@ async function inspectDetails(world: World, key: string, children: Agent[], name
   const text = await raw.innerText()
   for (const child of children) expect(text).toContain(child.id)
   expect(text).toContain(required(world.parent.session.header.cwd))
-  expect(text).toContain('"cwd"')
+  expect(text).toContain('Working directory:')
   expect(text).toContain('"locations"')
   expect(text).toContain(parentPermissionMarker(key))
   expect(await chosen.getAttribute('aria-checked')).toBe('true')
@@ -419,12 +419,13 @@ async function inspectDetails(world: World, key: string, children: Agent[], name
 
 async function inspectNarrowAccess(world: World, key: string) {
   const card = world.card(key)
+  await card.getByRole('button', { name: world.detailsLabel, exact: true }).click()
   const chosen = card.getByRole('radio', { name: 'Allow', exact: true })
   await chosen.focus()
   await world.page.setViewportSize({ width: 390, height: 844 })
   expect(await chosen.evaluate((element) => document.activeElement === element)).toBe(true)
   expect(await chosen.getAttribute('aria-checked')).toBe('true')
-  expect(await card.locator('[data-question-operation]').innerText()).toContain(`write ${parentPermissionMarker(key)}`)
+  expect(await card.innerText()).toContain(`write ${parentPermissionMarker(key)}`)
   for (const option of PARENT_PERMISSION_OPTIONS) {
     const radio = card.getByRole('radio', { name: option.name, exact: true })
     await radio.scrollIntoViewIfNeeded()
@@ -538,11 +539,11 @@ it.each(['file-write', 'long-scope'] as const)(
         return
       }
       const card = await assertChoices(world, key, child, parentPermissionMarker(key))
-      const operation = card.locator('[data-question-operation]')
+      const operation = card.locator(shape === 'long-scope' ? '[data-question-detail]' : '[data-question-operation]')
       const text = await operation.innerText()
       const details = card.getByRole('button', { name: world.detailsLabel, exact: true })
-      expect(await details.getAttribute('aria-expanded')).toBe('false')
-      expect(await card.locator('[data-question-detail]').count()).toBe(0)
+      expect(await details.getAttribute('aria-expanded')).toBe('true')
+      expect(await card.locator('[data-question-detail]').count()).toBe(1)
       expect(text).toContain(world.marker(key))
       if (shape === 'file-write') {
         expect(text).toContain('write')
@@ -559,9 +560,11 @@ it.each(['file-write', 'long-scope'] as const)(
         expect(text).toContain('review.example.invalid')
         expect(text).toContain('REQUIRES_OPERATOR_REVIEW_AT_END')
         expect(text).not.toContain('…')
-        expect(await card.locator('header').evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
-          true,
-        )
+        expect(
+          await card
+            .locator('[data-question-scroll]')
+            .evaluate((element) => element.scrollHeight > element.clientHeight),
+        ).toBe(true)
         await world.save(`${key}-default-wide`)
         for (const [name, needle] of [
           ['command-end', 'ACP_LONG_COMMAND_END'],
@@ -577,7 +580,7 @@ it.each(['file-write', 'long-scope'] as const)(
               const range = document.createRange()
               range.setStart(node, offset)
               range.setEnd(node, offset + needle.length)
-              const header = element.closest('header')!
+              const header = element.closest('[data-question-scroll]')!
               const target = range.getBoundingClientRect()
               header.scrollTop += target.top - header.getBoundingClientRect().top - header.clientHeight / 2
               return
@@ -595,7 +598,7 @@ it.each(['file-write', 'long-scope'] as const)(
                 range.setStart(node, offset)
                 range.setEnd(node, offset + needle.length)
                 const target = range.getBoundingClientRect()
-                const header = element.closest('header')!.getBoundingClientRect()
+                const header = element.closest('[data-question-scroll]')!.getBoundingClientRect()
                 return (
                   target.top >= header.top &&
                   target.bottom <= header.bottom &&

@@ -137,13 +137,13 @@ beforeEach(() => {
   nativeViews.markdown.length = 0
 })
 
-it('keeps current request details secondary without hiding legacy operations', () => {
+it('opens permission evidence before a choice for current and in-flight requests', () => {
   const detail = 'Command:\n\n```\nprintf exact-operation\n```'
   const pending = candidate('acp-permission:permission-1', {
     questions: [
       {
         id: 'acp-permission:permission-1',
-        question: 'printf exact-operation',
+        question: 'Allow this command to run?',
         detail,
         header: 'Worker',
         options: [{ label: 'ALPHA' }],
@@ -151,8 +151,8 @@ it('keeps current request details secondary without hiding legacy operations', (
     ],
   })
   buttons(renderQuestion(pending).tree)
-  expect(nativeViews.disclosures[0]).toMatchObject({ open: false, title: 'acpQuestionDetails', expandOnRowClick: true })
-  expect(nativeViews.markdown).toEqual([])
+  expect(nativeViews.disclosures[0]).toMatchObject({ open: true, title: 'acpQuestionDetails', expandOnRowClick: true })
+  expect(nativeViews.markdown[0]).toMatchObject({ text: detail, variant: 'compact' })
   const legacy = candidate('acp-permission:permission-2', {
     questions: [
       { id: 'acp-permission:permission-2', question: 'Permission required', detail, options: [{ label: 'ALPHA' }] },

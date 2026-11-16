@@ -24,6 +24,53 @@ const request = (options: acp.PermissionOption[]): acp.RequestPermissionRequest 
 })
 
 describe('complete ACP permission choices', () => {
+  it('puts a smoke-test command in fenced detail below a short heading', async () => {
+    const command =
+      '/Users/Lukas.Steinbrecher/.dsh/bin/sandbox --allow-write=/outside "Smoke test: write marker" -- python3 -c \'print("outside-ok\\\n")\''
+    const input = { CommandLine: command, Cwd: '/workspace/current', WaitMsBeforeAsync: 10000 }
+    const original = structuredClone(input)
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['Allow'] }],
+    }))
+    const result = await createAcpNativePermissionHandler({
+      userQuestions: { ask },
+      getAgent: () => ({}),
+      nativeQuestionProfile: 'antigravity',
+    })({
+      ...request([option('once', 'Allow', 'allow_once'), option('always', 'Always', 'allow_always')]),
+      toolCall: { toolCallId: 'formatted-command', kind: 'execute', title: command, rawInput: input },
+    })
+    const question = ask.mock.calls[0]![0].questions[0]!
+    expect(question.question).toBe('Allow this command to run?')
+    expect(question.detail).toContain('Command:\n\n' + '\x60\x60\x60\n' + command + '\n\x60\x60\x60')
+    expect(question.detail?.split(command)).toHaveLength(2)
+    expect(question.detail).toContain('Working directory:')
+    expect(question.detail).toContain('/workspace/current')
+    expect(question.detail).toContain('Wait before backgrounding: 10000 ms')
+    expect(question.detail).not.toContain('"CommandLine"')
+    expect(question.detail).not.toContain('"WaitMsBeforeAsync"')
+    expect(input).toEqual(original)
+    expect(result).toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
+  })
+
+  it.each([null, undefined])('keeps tool names and Markdown fences intact with title %j', async (title) => {
+    const command = 'printf "```\\n# untrusted heading"'
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+    await createAcpNativePermissionHandler({ userQuestions: { ask }, getAgent: () => ({}) })({
+      ...request([option('once', 'Allow', 'allow_once'), option('always', 'Always', 'allow_always')]),
+      toolCall: {
+        toolCallId: 'nullable-title',
+        kind: 'execute',
+        ...(title === undefined ? {} : { title }),
+        name: 'run_command',
+        rawInput: { command },
+      },
+    })
+    const question = ask.mock.calls[0]![0].questions[0]!
+    expect(question.question).toBe('Allow this command to run?')
+    expect(question.detail).toBe('```\nrun_command\n```\n\nCommand:\n\n````\n' + command + '\n````')
+  })
+
   it.each(['en', 'zh'] as const)(
     'summarizes Antigravity command aliases without exposing duplicate input (%s)',
     async (locale) => {
@@ -61,14 +108,22 @@ describe('complete ACP permission choices', () => {
           },
         })
         const question = ask.mock.calls[0]![0].questions[0]!
-        expect(question.question).toBe(
+        expect(question.question).toBe(locale === 'zh' ? '是否允许执行此命令？' : 'Allow this command to run?')
+        expect(question.detail).toBe(
           [
-            `${locale === 'zh' ? '命令' : 'Command'}: ${wireInput.CommandLine}`,
-            `${locale === 'zh' ? '工作目录' : 'Working directory'}: ${wireInput.Cwd}`,
-            locale === 'zh' ? `转入后台前等待: ${wait} 毫秒` : `Wait before backgrounding: ${wait} ms`,
-          ].join('\n'),
+            (locale === 'zh' ? '命令' : 'Command') +
+              ':\n\n' +
+              '\x60\x60\x60\n' +
+              wireInput.CommandLine +
+              '\n\x60\x60\x60',
+            (locale === 'zh' ? '工作目录' : 'Working directory') +
+              ':\n\n' +
+              '\x60\x60\x60\n' +
+              wireInput.Cwd +
+              '\n\x60\x60\x60',
+            locale === 'zh' ? '转入后台前等待: ' + wait + ' 毫秒' : 'Wait before backgrounding: ' + wait + ' ms',
+          ].join('\n\n'),
         )
-        expect(question.detail).toBe(`\`\`\`\n${JSON.stringify({ rawInput: original }, null, 2)}\n\`\`\``)
         expect(question.options!.map(({ label }) => label)).toEqual(options.map(({ name }) => name))
         expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'once-id' } })
         expect(wireInput).toEqual({
@@ -107,13 +162,12 @@ describe('complete ACP permission choices', () => {
         toolCall: { toolCallId: 'conflicting-aliases', kind: 'execute', rawInput: input },
       })
       const question = ask.mock.calls[0]![0].questions[0]!
-      expect(question.question).toContain('printf canonical')
-      expect(question.question).toContain('/workspace/current')
-      expect(question.question).toContain('"CommandLine": "rm conflicting-target"')
-      expect(question.question).toContain('"Cwd": "/other/workspace"')
-      expect(question.question).toContain('"permissions"')
-      expect(question.question).toContain('private.example')
-      expect(question.detail).toBe(`\`\`\`\n${JSON.stringify({ rawInput: input }, null, 2)}\n\`\`\``)
+      expect(question.detail).toContain('printf canonical')
+      expect(question.detail).toContain('/workspace/current')
+      expect(question.detail).toContain('"CommandLine": "rm conflicting-target"')
+      expect(question.detail).toContain('"Cwd": "/other/workspace"')
+      expect(question.detail).toContain('"permissions"')
+      expect(question.detail).toContain('private.example')
     },
   )
 
@@ -131,8 +185,8 @@ describe('complete ACP permission choices', () => {
         toolCall: { toolCallId: 'unknown-wait-value', kind: 'execute', rawInput: input },
       })
       const question = ask.mock.calls[0]![0].questions[0]!
-      expect(question.question).toContain(JSON.stringify({ WaitMsBeforeAsync: wait }, null, 2))
-      expect(question.question).not.toContain('Wait before backgrounding')
+      expect(question.detail).toContain(JSON.stringify({ rawInput: { WaitMsBeforeAsync: wait } }, null, 2))
+      expect(question.detail).not.toContain('Wait before backgrounding')
     },
   )
 
@@ -154,7 +208,7 @@ describe('complete ACP permission choices', () => {
       ...request([option('once', 'Allow once', 'allow_once')]),
       toolCall: { toolCallId: 'distinct-facts', kind: 'execute', rawInput: input },
     })
-    const text = ask.mock.calls[0]![0].questions[0]!.question
+    const text = ask.mock.calls[0]![0].questions[0]!.detail!
     expect(text).toContain('"CommandLine": "printf exact "')
     expect(text).toContain('"Cwd": "/workspace "')
     expect(text).toContain('"argv": [')
@@ -184,7 +238,8 @@ describe('complete ACP permission choices', () => {
           rawInput: input,
         },
       })
-      const text = ask.mock.calls[0]![0].questions[0]!.question
+      const question = ask.mock.calls[0]![0].questions[0]!
+      const text = scope === 'non-execute' ? question.question : question.detail!
       expect(text).toContain('"CommandLine": "printf exact"')
       expect(text).toContain('"Cwd": "/workspace"')
       expect(text).toContain('"WaitMsBeforeAsync": 5000')
@@ -208,12 +263,12 @@ describe('complete ACP permission choices', () => {
       toolCall: { toolCallId: 'command-description', kind: 'execute', rawInput: input },
     })
     const question = ask.mock.calls[0]![0].questions[0]!
-    expect(question.question).toContain('List source files')
-    expect(question.question).not.toContain('"description"')
-    expect(question.question).toContain(input.command)
-    expect(question.question).toContain('"unknown_scope"')
-    expect(question.question).toContain('internal.example')
-    expect(question.detail).toContain('"description": "List source files"')
+    expect(question.detail).toContain('List source files')
+    expect(question.detail).not.toContain('"description"')
+    expect(question.detail).toContain(input.command)
+    expect(question.detail).toContain('"unknown_scope"')
+    expect(question.detail).toContain('internal.example')
+    expect(question.detail).toContain('List source files')
     expect(question.options!.map(({ label }) => label)).toEqual(['Allow Once', 'Always Allow', 'Deny'])
   })
 
@@ -359,7 +414,9 @@ describe('complete ACP permission choices', () => {
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
     const text =
       surface === 'native-question'
-        ? ask.mock.calls[0]![0].questions[0]!.question
+        ? kind === 'execute'
+          ? ask.mock.calls[0]![0].questions[0]!.detail!
+          : ask.mock.calls[0]![0].questions[0]!.question
         : approval.request.mock.calls[0]![0].reason!
     expect(text).toContain(target)
     expect(text).toContain(kind === 'read' ? '"limit": 10' : '/workspace/command-root')
@@ -385,13 +442,15 @@ describe('complete ACP permission choices', () => {
     })
     const question = ask.mock.calls[0]![0].questions[0]!
     expect(question.header).toBe('授权请求')
-    expect(question.question).toBe(
-      `${title}\n命令: ${command.replace('\u001b', '\\x1b')}\n工作目录: /workspace/current\n位置: /workspace/report.txt:7\n输入: {\n  "timeout": 45\n}`,
-    )
-    expect(question.question).not.toContain('…')
-    expect(question.question).not.toContain('\u001b')
-    expect(question.detail).toContain('"rawInput"')
-    expect(question.detail).toContain('"locations"')
+    expect(question.question).toBe('是否允许执行此命令？')
+    expect(question.detail).toContain(title)
+    expect(question.detail).toContain(command.replace('\u001b', '\\x1b'))
+    expect(question.detail).toContain('/workspace/current')
+    expect(question.detail).toContain('/workspace/report.txt')
+    expect(question.detail).toContain('"timeout": 45')
+    expect(question.detail).toContain('"line": 7')
+    expect(question.detail).not.toContain('…')
+    expect(question.detail).not.toContain('\u001b')
   })
 
   it.each([
@@ -406,8 +465,10 @@ describe('complete ACP permission choices', () => {
     })
     const question = ask.mock.calls[0]![0].questions[0]!
     expect(question.header).toBe('Permission request')
-    expect(question.question).toContain(JSON.stringify(input, null, 2))
-    if (kind === 'execute') expect(question.question).toContain('Command details were not provided')
+    expect(kind === 'execute' ? question.detail : question.question).toContain(
+      kind === 'execute' ? JSON.stringify({ rawInput: input }, null, 2) : JSON.stringify(input, null, 2),
+    )
+    if (kind === 'execute') expect(question.detail).toContain('Command details were not provided')
   })
 
   it.each(['en', 'zh'] as const)(

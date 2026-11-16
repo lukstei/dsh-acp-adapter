@@ -185,12 +185,13 @@ it.skipIf(!enabled).each(['ask', 'auto'] as const)(
       expect(existsSync(path)).toBe(false)
       expect(host.ctx.approval.overrideOf(run.child.session)).toBe('never')
       expect(await card.locator('[data-question-source]').innerText()).toContain(run.child.id.slice(0, 8))
-      const operation = await card.locator('[data-question-operation]').innerText()
+      const operation = await card.innerText()
       expect(operation).toContain(path)
       expect(operation).toContain(marker)
       expect(
         await card.getByRole('button', { name: 'Request details', exact: true }).getAttribute('aria-expanded'),
-      ).toBe('false')
+      ).toBe('true')
+      await card.getByRole('button', { name: 'Request details', exact: true }).click()
       expect(
         await card.evaluate((element) => {
           const header = element.querySelector('header')!
