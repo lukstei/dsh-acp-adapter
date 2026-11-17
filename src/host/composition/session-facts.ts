@@ -1,9 +1,8 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { Service, type Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import type { AcpExecutionView } from '../../contract/external-subagent.ts'
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition, ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
-import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tool-todo'
 import type {} from '@deepseek-ai/dsh-working-directory'
@@ -16,50 +15,75 @@ import {
 } from '../../domain/session/session-facts.ts'
 import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    acpSessionFacts: AcpSessionFacts
+  }
+}
+
 const externalRecordView: AcpExecutionView = { externalSubagent: true }
 const ordinarySessionView: AcpExecutionView = { externalSubagent: false }
+const unroutedHistoryView: AcpExecutionView = { externalSubagent: false, completedWithoutModel: true }
 
-export const acpExecutionProjection = {
+const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 2,
+  stateVersion: 5,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
   wire: {
-    viewSchema: z.object({ externalSubagent: z.boolean() }),
-    view: (state) => (state.externalSubagent ? externalRecordView : ordinarySessionView),
+    viewSchema: z.object({ externalSubagent: z.boolean(), completedWithoutModel: z.literal(true).optional() }),
+    view(state) {
+      if (state.externalSubagent) return externalRecordView
+      return state.completedWithoutModel &&
+        state.soleRequestProvider === null &&
+        !state.turnOpen &&
+        !state.acpReplaySeen
+        ? unroutedHistoryView
+        : ordinarySessionView
+    },
   },
 } satisfies ProjectionDefinition<'acpExecution', SessionFacts>
 
-/**
- * Reader retained from our awaited registration. One host composition owns the
- * `acpExecution` projection key per process; a reload replaces the reader.
- */
-let executionFactReader: ((session: Session) => SessionFacts) | undefined
+/** Own the ready projection; consumers read domain facts without knowing its key or handle. */
+export class AcpSessionFacts extends Service {
+  static inject = ['sessionProjections']
+  private handle!: ProjectionHandle<SessionFacts>
 
-/**
- * Retain the awaited ACP execution projection handle for this composition.
- * Registration readiness is owned by the caller that awaited it, so a read
- * before retention fails closed instead of folding an unregistered unit.
- * @param handle - ready handle returned by `sessionProjections.register`.
- * @returns disposer clearing this reader.
- */
-export function retainAcpExecutionProjection(handle: ProjectionHandle<SessionFacts>): () => void {
-  const read = (session: Session): SessionFacts => handle.stateOf(session)
-  executionFactReader = read
-  return () => {
-    if (executionFactReader === read) executionFactReader = undefined
+  constructor(ctx: Context) {
+    super(ctx, 'acpSessionFacts')
+  }
+
+  protected async [Service.init](): Promise<void> {
+    this.handle = await this.ctx.sessionProjections.register(acpExecutionProjection)
+  }
+
+  read(session: Session): SessionFacts {
+    return this.handle.stateOf(session)
   }
 }
 
-export function readSessionFacts(_ctx: Context, session: Session): SessionFacts {
-  if (executionFactReader === undefined) throw new Error('ACP execution projection is not ready')
-  return executionFactReader(session)
+export type SessionFactsReader = (session: Session) => SessionFacts
+
+/** Capture the ready owner so accepted work can drain after service unpublication. */
+export function sessionFactsReader(ctx: Context): SessionFactsReader {
+  const owner = ctx.get('acpSessionFacts')
+  if (owner === undefined) throw new Error('ACP execution facts owner is unavailable')
+  return (session) => owner.read(session)
+}
+
+export function readSessionFacts(ctx: Context, session: Session): SessionFacts {
+  return sessionFactsReader(ctx)(session)
 }
 
 /** Accessors always read the host's current cut, including after a policy append. */
-export function acpSessionView(ctx: Context, session: Session | undefined): SessionLike | undefined {
+export function acpSessionView(
+  ctx: Context,
+  session: Session | undefined,
+  readFacts?: SessionFactsReader,
+): SessionLike | undefined {
   if (session === undefined) return undefined
+  const factsOf = readFacts ?? sessionFactsReader(ctx)
   return {
     identity: session,
     header: session.header,
@@ -71,13 +95,13 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
       return session.seq
     },
     get facts() {
-      return readSessionFacts(ctx, session)
+      return factsOf(session)
     },
     captureRemoteCancelledTurn: (scope) => {
       const registry = ctx.get('agents', false)
       const owner = registry?.get(session.id)
       const matchesScope = () => {
-        const facts = readSessionFacts(ctx, session)
+        const facts = factsOf(session)
         return (
           facts.turnOpen &&
           facts.openSteps.some(
@@ -140,9 +164,8 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
       }
     },
     publishPlan: (todos) => {
-      // tool-todo owns both the `todos` projection and the `todo_write` tool;
-      // a missing tool means the optional native plan surface is not mounted.
-      if (ctx.get('tools', false)?.get('todo_write') === undefined) return
+      // tool-todo is optional. Its projection owns current plan state and the native dock.
+      if (ctx.sessionProjections.snapshot(session, new Set(['todos'])).values.todos === undefined) return
       session.append('todo/write', { todos: [...todos] })
     },
   }

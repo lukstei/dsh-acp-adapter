@@ -1,9 +1,8 @@
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { expect, it, vi } from 'vitest'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
-import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
-import { executeSingleTool } from '../../support/tool-call.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import {
   createDevinLiveToolBudget,
@@ -19,7 +18,7 @@ it('allows one Lead spawn and one teammate mailbox message', () => {
       sessionKey: 'lead-session',
       role: 'lead',
       phase: 'initial',
-      tool: 'spawn_teammate',
+      tool: 'subagent',
     }),
   ).toBeUndefined()
   expect(
@@ -141,13 +140,13 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtimeFiber = await ctx.plugin(ToolRuntime)
-  await ctx.plugin(NativeToolExecutor)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   let bodyCalls = 0
   ctx.tools.register(
     defineTool({
       name: 'send_message',
       description: 'Send a Team message.',
-      parameters: { target: { type: 'string', required: true }, message: { type: 'string', required: true } },
+      parameters: { agent: { type: 'string', required: true }, message: { type: 'string', required: true } },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
       execute: () => {
         bodyCalls += 1
@@ -167,14 +166,20 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
     return violation === undefined ? undefined : 'LIVE_TOOL_BUDGET'
   })
   try {
-    const result = await executeSingleTool(ctx, {
-      callId: ToolCallId('prohibited-lead-message'),
-      name: 'send_message',
-      arguments: { target: 'lead', message: 'marker' },
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      calls: [
+        {
+          type: 'tool-call',
+          id: ToolCallId('prohibited-lead-message'),
+          name: 'send_message',
+          arguments: JSON.stringify({ agent: 'lead', message: 'marker' }),
+        },
+      ],
       agent: { id: 'lead-0', options: { provider: 'acp-devin' } } as never,
     })
-    expect(result.isError).toBe(true)
-    expect(result.content).toEqual([{ type: 'text', text: 'Error: LIVE_TOOL_BUDGET' }])
+    expect(result.results[0]!.result.isError).toBe(true)
+    expect(result.results[0]!.result.content).toEqual([{ type: 'text', text: 'Error: LIVE_TOOL_BUDGET' }])
     expect(bodyCalls).toBe(0)
     expect(budget.allowedDispatches).toBe(0)
     expect(budget.deniedDispatches).toBe(1)
@@ -188,7 +193,7 @@ it('caps real concurrent Host tool bodies at sixteen admissions', async () => {
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtimeFiber = await ctx.plugin(ToolRuntime)
-  await ctx.plugin(NativeToolExecutor)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   let bodyCalls = 0
   ctx.tools.register(
     defineTool({
@@ -216,15 +221,14 @@ it('caps real concurrent Host tool bodies at sixteen admissions', async () => {
   try {
     const results = await Promise.all(
       Array.from({ length: MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS + 4 }, (_, index) =>
-        executeSingleTool(ctx, {
-          callId: ToolCallId(`probe-${index}`),
-          name: 'probe',
-          arguments: {},
+        ctx.tools.execute({
+          signal: new AbortController().signal,
+          calls: [{ type: 'tool-call', id: ToolCallId(`probe-${index}`), name: 'probe', arguments: '{}' }],
           agent: { id: 'lead-0', options: { provider: 'acp-devin' } } as never,
         }),
       ),
     )
-    expect(results.filter((result) => result.isError)).toHaveLength(4)
+    expect(results.filter((result) => result.results[0]!.result.isError)).toHaveLength(4)
     expect(bodyCalls).toBe(MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS)
     expect(budget.allowedDispatches).toBe(MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS)
     expect(budget.deniedDispatches).toBe(4)

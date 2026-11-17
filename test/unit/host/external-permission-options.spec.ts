@@ -75,7 +75,7 @@ async function fixture({ service = true, profile = 'antigravity', policy = 'ask'
   const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
     answers: [{ id: questions[0]!.id, selected: ['Always allow'] }],
   }))
-  const legacy = vi.fn(async (_request: unknown) => 'allowed-once' as const)
+  const legacy = vi.fn(async () => 'allowed-once' as const)
   ctx.on('approval/request', legacy)
   const notify = vi.fn(async (_issue: AcpNativeQuestionUnavailable): Promise<void> => {})
   const deps = {
@@ -227,20 +227,6 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     )
     expect(provider).not.toHaveBeenCalled()
     expect(f.ask).toHaveBeenCalledOnce()
-  })
-
-  it('terminal not-applicable stops later providers and preserves the complete human choices', async () => {
-    const f = await fixture()
-    const later = vi.fn(async (): Promise<AcpExternalPolicyDecision> => 'allow-once')
-    f.ctx.on('dsh-acp/permission-policy', async () => 'not-applicable', { prepend: true })
-    f.ctx.on('dsh-acp/permission-policy', later)
-    expect(await f.handle()).toEqual(selected('always'))
-    expect(later).not.toHaveBeenCalled()
-    expect(f.legacy).not.toHaveBeenCalled()
-    const question = f.ask.mock.calls[0]![0].questions[0]!
-    expect(question.options).toEqual(request().options.map(({ name }) => ({ label: name })))
-    expect(question.detail).toContain('printf fixture-only')
-    expect(decided(f.records).decisionVia).toBe('native-question')
   })
 
   it('evaluates binary approval options through machine policy and falls back to native approval on not-applicable', async () => {

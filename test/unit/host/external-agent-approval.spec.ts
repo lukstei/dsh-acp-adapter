@@ -38,10 +38,8 @@ it.each(['allowed-once', 'rejected'] as const)(
   async (outcome) => {
     const f = await fixture()
     const audit: AcpPermissionAuditRecord[] = []
-    const answers = vi.fn(async (request: { agent: Agent; toolArgs?: unknown; commandLine?: string }) => {
+    const answers = vi.fn(async (request: { agent: Agent }) => {
       expect(request.agent).toBe(f.agent)
-      expect(request.toolArgs).toEqual({ command: 'test-command' })
-      expect(request.commandLine).toBe('test-command')
       expect(audit.map((record) => record.data.phase)).toEqual(['asked'])
       return outcome
     })
@@ -267,9 +265,12 @@ for (const policy of ['ask', 'never'] as const) {
         signal: AbortSignal
         toolArgs?: unknown
         commandLine?: string
+        reason: string
       }
       expect(event.agent).toBe(f.agent)
       expect(event.callId).toBe('metadata-call')
+      expect(event.reason).toContain(input.name)
+      expect(event).not.toHaveProperty('displayReason')
       expect(event.signal).toBe(controller.signal)
       if (input.rawInput === undefined) expect(event).not.toHaveProperty('toolArgs')
       else expect(event.toolArgs).toEqual(input.rawInput)

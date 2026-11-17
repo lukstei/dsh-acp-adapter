@@ -1,4 +1,4 @@
-import { installAcpExecutionProjection, withSessionFacts } from '../../support/session-facts.ts'
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import { BlockAssembler, createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -7,14 +7,13 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
-import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
-import { acpSessionView } from '../../../src/host/composition/session-facts.ts'
+import { AcpSessionFacts, acpSessionView } from '../../../src/host/composition/session-facts.ts'
 
 const profile = (command = 'agent', env: Record<string, string> = {}): AcpAgentConfig => ({
   name: 'Test',
@@ -198,8 +197,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       await ctx.plugin(SessionProjectionRegistry)
       await ctx.plugin(SystemPrompt, {})
       await ctx.plugin(ToolRuntime)
-      await ctx.plugin(NativeToolExecutor)
-      await installAcpExecutionProjection(ctx)
+      await ctx.plugin(AcpSessionFacts)
       try {
         const native = ctx.sessions.create(SessionId('native-before-acp'), { meta: { cwd: '/workspace' } })
         ctx.provide('workingDirectory', { get: () => '/workspace' } as never)
@@ -237,7 +235,6 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
         native.append('user/message', current, { surfaceOp: 'append' })
         const nativeView = acpSessionView(ctx, native)!
         const adapterView = Object.create(nativeView) as typeof nativeView
-        Object.defineProperty(adapterView, 'permissions', { value: { sandbox: null, approval: null } })
         const sent: unknown[] = []
         const adapter = new AcpProfileAdapter(
           'test',

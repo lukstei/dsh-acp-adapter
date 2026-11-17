@@ -25,7 +25,7 @@ export const ACP_PERMISSION_ID_MAX_BYTES = 512
 
 const dshTeamPresentation = Symbol('dsh-team-permission-presentation')
 interface DshTeamPermissionPresentation {
-  readonly tool: 'spawn_teammate' | 'send_message'
+  readonly tool: 'subagent' | 'subagent_fork' | 'subagent_oar' | 'send_message'
   readonly workspace?: string
 }
 
@@ -228,15 +228,15 @@ function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'],
       presented.add(key)
       return true
     }
-    if (team?.tool === 'spawn_teammate' && field('name', copy.member)) {
+    if (team !== undefined && team.tool !== 'send_message') {
+      field('name', copy.member)
       field('description', copy.responsibility)
-      if (!field('context', copy.context) && record.context === undefined) lines.push(`${copy.context}: fresh`)
       field('provider', copy.provider)
       field('model', copy.model)
       field('agent', copy.agent)
       if (team.workspace !== undefined) lines.push(`${copy.workspace}: ${visibleCommand(team.workspace)}`)
       if (typeof record.prompt === 'string') presented.add('prompt')
-    } else if (team?.tool === 'send_message' && field('target', copy.recipient)) {
+    } else if (team?.tool === 'send_message' && field('agent', copy.recipient)) {
       if (typeof record.message === 'string') presented.add('message')
     }
     const directory = typeof record.cwd === 'string' ? record.cwd : undefined

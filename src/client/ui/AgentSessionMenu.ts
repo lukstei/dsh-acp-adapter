@@ -106,15 +106,6 @@ export function AgentSessionMenu({
       label: h('span', null, t('agentControlUnavailable')),
       disabled: true,
     })
-  const dotIndex = label.indexOf(' · ')
-  const labelContent =
-    dotIndex !== -1
-      ? [
-          h('span', { key: 'prefix', className: css.triggerPrefix }, label.slice(0, dotIndex + 3)),
-          h('span', { key: 'mode' }, label.slice(dotIndex + 3)),
-        ]
-      : label
-
   return h(
     'span',
     { ref: anchor, className: css.menuAnchor },
@@ -124,11 +115,9 @@ export function AgentSessionMenu({
       autoFocus: true,
       side,
       align,
-      className: css.menuRoot,
       items,
       listClassName: css.menuList,
-      // Pane heights differ; let native positioning remeasure on each render.
-      getAnchorRect: () => anchor.current?.getBoundingClientRect() ?? null,
+      anchorRef: anchor,
       selectedId: group?.choices.find((choice) => choice.current)?.id,
       onClose: () => onOpenChange(false),
       onSelect: (id: string) => {
@@ -156,8 +145,6 @@ export function AgentSessionMenu({
             type: 'button',
             className: css.trigger,
             disabled,
-            title: label,
-            'aria-label': label,
             'aria-haspopup': 'menu',
             'aria-expanded': open,
             onClick: () => {
@@ -165,7 +152,7 @@ export function AgentSessionMenu({
               onOpenChange(!open)
             },
           },
-          h('span', { className: css.triggerLabel }, labelContent),
+          h('span', { className: css.triggerLabel }, label),
           h(IconChevronDownOutlineMedium, { className: `${css.chevron}${open ? ` ${css.chevronOpen}` : ''}` }),
         ),
       }),

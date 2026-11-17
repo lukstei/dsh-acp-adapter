@@ -4,10 +4,12 @@ import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
-import { RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
-import type { ToolDefinition, ToolExecutionResult, ResolvedToolSet } from '@deepseek-ai/dsh-tools'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import type { ToolCallBlock, ToolSchema } from '@deepseek-ai/dsh-llm'
+import { RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
+import type { ToolDefinition, ToolExecutionResult, ToolBatchResult } from '@deepseek-ai/dsh-tools'
+import { ToolExecutionPipeline } from '@deepseek-ai/dsh-tools/pipeline'
+import type { ReadStepToolAdmission } from './step-tool-admissions.ts'
+import { ToolDirectoryOwner } from './tool-directory-owner.ts'
+import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
 import { Server } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -24,16 +26,10 @@ import { toolContent } from './tool-content.ts'
 import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
 import { ToolExecutionScheduler } from './tool-execution-scheduler.ts'
 import { waitWithin } from '../../runtime/process/timeout.ts'
-import {
-  collectLiveDiagnostic,
-  emitLiveDiagnostic,
-  liveDiagnosticFingerprint,
-  liveDiagnosticId,
-  liveDiagnosticTraceEnabled,
-  noteLiveDiagnosticFailure,
-} from '../../contract/live-diagnostic-trace.ts'
+import type {} from '../composition/live-diagnostics.ts'
 import type {
   LiveDiagnosticErrorKind,
+  LiveDiagnosticTrace,
   LiveDiagnosticTargetRole,
   LiveDiagnosticTool,
 } from '../../contract/live-diagnostic-trace.ts'
@@ -41,9 +37,14 @@ import { performance } from 'node:perf_hooks'
 import { normalizeAntigravityPresentation, resolveAntigravityNativeTool } from './antigravity.ts'
 import { createTeamToolContext } from '../teams/tool-context.ts'
 import { DEFERRED_WAIT_TEXT, DeferredWaitReceipts } from './deferred-wait-receipts.ts'
+import { redactSecretText } from '../../contract/redaction.ts'
+import { createAcpLogger } from '../../domain/observability/logging.ts'
+import { toolDiscoveryInstructions } from '../../agents/compatibility.ts'
 
 const TEAM_TOOLS = [
-  'spawn_teammate',
+  'subagent',
+  'subagent_fork',
+  'subagent_oar',
   'send_message',
   'list_agents',
   'wait_agent',
@@ -53,13 +54,13 @@ const TEAM_TOOLS = [
   'team_task_get',
   'team_task_update',
 ] as const
-function bridgeInstructions(names: ReadonlyMap<string, ToolDefinition>, hasTeams: boolean): string {
+function bridgeInstructions(names: ReadonlyMap<string, ToolSchema>): string {
   const skillRoute = names.has('skill')
     ? 'The DSH MCP tool "skill" is listed; access DSH skill-catalog entries through that tool using its exact tools/list schema and names.'
     : names.has(RUN_CODE_NAME)
       ? `No direct DSH skill tool is listed. If DSH skill access is exposed through the generated SDK, call it inside "${RUN_CODE_NAME}" using the host-provided SDK instructions and listed schema; do not invent a direct skill tool.`
       : 'No DSH skill-loading entry point is listed. Do not claim DSH skill-catalog entries are available through an Agent-native skill tool; explain that this DSH connection has no listed skill entry point.'
-  return `These are native DSH tools available to this session. DSH sandbox and approval policies apply to these tools; your own Agent tools retain their separate policies. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team members share the workspace and only fresh context is supported.' : ''}`
+  return `These are native DSH tools available to this session. DSH sandbox and approval policies apply to these tools; your own Agent tools retain their separate policies. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}`
 }
 const diagnosticTools = new Set<string>(TEAM_TOOLS)
 const diagnosticErrorKinds = new Set<LiveDiagnosticErrorKind>([
@@ -80,7 +81,10 @@ const diagnosticErrorKinds = new Set<LiveDiagnosticErrorKind>([
 function diagnosticTool(name: string): LiveDiagnosticTool {
   return diagnosticTools.has(name) ? (name as LiveDiagnosticTool) : 'other'
 }
-function diagnosticErrorKind(error: unknown): LiveDiagnosticErrorKind | undefined {
+function diagnosticErrorKind(
+  error: unknown,
+  trace: LiveDiagnosticTrace | undefined,
+): LiveDiagnosticErrorKind | undefined {
   try {
     if (typeof error !== 'object' || error === null || !('code' in error)) return undefined
     const code = (error as { readonly code?: unknown }).code
@@ -88,7 +92,7 @@ function diagnosticErrorKind(error: unknown): LiveDiagnosticErrorKind | undefine
       ? (code as LiveDiagnosticErrorKind)
       : undefined
   } catch {
-    noteLiveDiagnosticFailure()
+    trace?.noteFailure()
     return undefined
   }
 }
@@ -362,11 +366,18 @@ function schemaValueKey(schemas: readonly ToolSchema[]): string {
   )
 }
 
-function bridgeDefinitions(ctx: Context, sessionId: string, schemas: readonly ToolSchema[] | undefined) {
+function bridgeDefinitions(
+  ctx: Context,
+  sessionId: string,
+  schemas: readonly ToolSchema[] | undefined,
+  readAdmission?: ReadStepToolAdmission,
+) {
   if (schemas === undefined) return undefined
   const agent = ctx.get('agents', false)?.get(sessionId as never)
   const tools = ctx.get('tools', false)
   if (agent === undefined || tools === undefined) return undefined
+  const admission = readAdmission?.(agent)
+  if (readAdmission !== undefined && admission === undefined) return undefined
   const teamContext = createTeamToolContext(ctx, agent)
   const visible = new Map<string, ToolSchema>()
   const duplicates = new Set<string>()
@@ -374,29 +385,29 @@ function bridgeDefinitions(ctx: Context, sessionId: string, schemas: readonly To
     if (visible.has(schema.name)) duplicates.add(schema.name)
     else visible.set(schema.name, schema)
   }
-  const definitions = new Map<string, ToolDefinition>()
-  // Use the same scoped registry as native execution. No independent tool list:
-  // plugin registration, scoped shadows and restrictions remain owned by DSH.
-  for (const schema of tools.schemas(agent).sort((left, right) => left.name.localeCompare(right.name))) {
-    const visibleSchema = visible.get(schema.name)
-    if (visibleSchema === undefined || duplicates.has(schema.name)) continue
-    const definition = tools.get(schema.name, agent)
-    if (definition !== undefined) definitions.set(schema.name, definition)
+  const definitions = new Map<string, ToolSchema>()
+  const registrations = new Map<string, ToolDefinition>()
+  // The request owns callable declarations: PTC's run_code is deliberately
+  // outside the capability registry. Its nested calls still use this step's set.
+  for (const [name, schema] of [...visible].sort(([left], [right]) => left.localeCompare(right))) {
+    if (duplicates.has(name)) continue
+    if (name === RUN_CODE_NAME) {
+      definitions.set(name, schema)
+      continue
+    }
+    const definition = admission === undefined ? tools.executable(name, agent) : admission.definitions.get(name)
+    if (definition === undefined || tools.get(name, agent) !== definition) continue
+    definitions.set(name, definition)
+    registrations.set(name, definition)
   }
-  // `run_code` is the selected executor's reserved transport, not a registry
-  // definition. Its assembled schema authorizes the executor-owned call.
-  const executorOwned = new Set<string>()
-  if (!definitions.has(RUN_CODE_NAME) && !duplicates.has(RUN_CODE_NAME) && visible.has(RUN_CODE_NAME))
-    executorOwned.add(RUN_CODE_NAME)
-  const schemaNames = [...definitions.keys(), ...executorOwned]
-  const currentSchemaKey = schemaValueKey(schemaNames.map((name) => visible.get(name)!))
-  return definitions.size === 0 && executorOwned.size === 0
+  const currentSchemaKey = schemaValueKey([...definitions.keys()].map((name) => visible.get(name)!))
+  return definitions.size === 0
     ? undefined
-    : { agent, tools, teamContext, definitions, executorOwned, visible, currentSchemaKey }
+    : { agent, tools, teamContext, definitions, registrations, visible, currentSchemaKey }
 }
 
 /** Registry-owned identity keys track scoped tool and visible schema changes. */
-export function createDshToolBridgeKey() {
+export function createDshToolBridgeKey(readAdmission?: ReadStepToolAdmission) {
   const identities = new WeakMap<object, number>()
   let nextIdentity = 0
   const identity = (value: object): number => {
@@ -408,18 +419,37 @@ export function createDshToolBridgeKey() {
     return id
   }
   return (ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]): unknown => {
-    const bridge = bridgeDefinitions(ctx, sessionId, schemas)
+    const bridge = bridgeDefinitions(ctx, sessionId, schemas, readAdmission)
     return bridge === undefined
       ? undefined
       : JSON.stringify([
           identity(bridge.agent),
           bridge.currentSchemaKey,
-          ...[...bridge.definitions].map(([name, definition]) => [name, identity(definition)]),
+          ...[...bridge.registrations].map(([name, definition]) => [name, identity(definition)]),
         ])
   }
 }
 
-/** Discover native session tools without enabling any host plugin or Teams service. */
+/**
+ * Bridge the request's declared tools without enabling Host plugins. Production
+ * callers pass the Host admission reader; omission permits only unconditional
+ * registrations and executor-owned transport for standalone callers.
+ */
+const TOOL_FAILURE_DETAIL_MAX = 1_000
+
+/** Report a batch failure by its cause; the wrapper message alone cannot be diagnosed. */
+function toolFailureText(error: unknown): string {
+  if (!(error instanceof Error)) return 'ACP_TEAM_TOOL_FAILED'
+  const safe = (value: string) =>
+    redactSecretText(value)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .slice(0, TOOL_FAILURE_DETAIL_MAX)
+  if (!(error instanceof ToolBatchExecutionError)) return safe(error.message)
+  const cause = error.cause
+  const detail = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : ''
+  return safe(detail.length === 0 ? error.message : `${error.message}: ${detail}`)
+}
+
 export async function createDshToolBridge(
   ctx: Context,
   sessionId: string,
@@ -428,21 +458,39 @@ export async function createDshToolBridge(
   resolveApprovalPolicy?: () => Promise<'auto' | 'ask'>,
   onPolicyContextChange?: () => void,
   schemas?: readonly ToolSchema[],
+  readAdmission?: ReadStepToolAdmission,
 ): Promise<AcpMcpLease | undefined> {
+  const trace = ctx.get('acpLiveDiagnostics', false)
+  const liveDiagnosticTraceEnabled = () => trace?.enabled() === true
+  const liveDiagnosticId = (kind: string, value: unknown) => trace?.id(kind, value)
+  const liveDiagnosticFingerprint = (kind: string, value: unknown) => trace?.fingerprint(kind, value)
+  const collectLiveDiagnostic = <T>(factory: () => T): T | undefined => trace?.collect(factory)
+  const emitLiveDiagnostic = (event: Parameters<LiveDiagnosticTrace['emit']>[0]) => trace?.emit(event)
   const agents = ctx.get('agents', false)
-  const bridge = bridgeDefinitions(ctx, sessionId, schemas)
+  const bridge = bridgeDefinitions(ctx, sessionId, schemas, readAdmission)
   if (bridge === undefined || agents === undefined) return undefined
-  const { tools, agent, teamContext, definitions, executorOwned, visible } = bridge
+  const { tools, agent, teamContext, definitions, registrations, visible } = bridge
   const hasTeams = teamContext !== undefined
   const lifetime = new AbortController()
+  const directory = new ToolDirectoryOwner({
+    agent,
+    tools,
+    definitions,
+    registrations,
+    lifetime: lifetime.signal,
+    ...(readAdmission === undefined ? {} : { readAdmission }),
+    // Cordis service lookup proxies do not establish actual owner identity.
+    isConnectionAvailable: () =>
+      ctx.get('tools', false) !== undefined &&
+      ctx.get('agents', false)?.get(sessionId as never) === agent &&
+      (teamContext?.isLive() ?? true),
+  })
   const deferredWaitReceipts = new DeferredWaitReceipts(sessionId)
   const identifiedWaitCalls = new Set<string>()
   const waitCallsWithOtherContent = new Set<string>()
   const diagnosticLeaseId = liveDiagnosticTraceEnabled()
     ? (liveDiagnosticId('mcp-lease', randomUUID()) ?? 'unavailable')
     : undefined
-  let prompt: AbortSignal | undefined
-  let promptGeneration = 0
   let leasePromptOrdinal = 0
   let adapterPromptOrdinal: number | undefined
   let onTeamReport: (() => void) | undefined
@@ -454,6 +502,7 @@ export async function createDshToolBridge(
     readonly terminalCalls: Set<ToolCallRecord>
     readonly queueAbort: AbortController
     readonly bodySignal?: AbortSignal
+    batchFailed: boolean
     feedbackCommitFailed: boolean
     yieldInstructionPending: boolean
     accepting: boolean
@@ -535,22 +584,9 @@ export async function createDshToolBridge(
   const path = `/${randomBytes(32).toString('hex')}`
   // The connection owns caller identity. Keep native tool names intact so
   // upstream prompts, descriptions and plugin instructions share one contract.
-  const names = new Map<string, ToolDefinition>(definitions)
-  for (const name of executorOwned) {
-    const schema = visible.get(name)!
-    names.set(name, {
-      name,
-      description: schema.description ?? name,
-      parameters: schema.parameters,
-      output: { schema: { type: 'json' }, render: () => [] },
-      execute: async () => {
-        throw new Error('ACP_HOST_EXECUTOR_TRANSPORT')
-      },
-    } as unknown as ToolDefinition)
-  }
-  const scopedInstructions = bridgeInstructions(names, hasTeams)
+  const names = definitions
+  const scopedInstructions = bridgeInstructions(names)
   const presented = new Map<string, string>()
-  const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
   const plainRecord = (value: unknown): Record<string, unknown> | undefined => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
     const prototype = Object.getPrototypeOf(value)
@@ -667,8 +703,6 @@ export async function createDshToolBridge(
         if (match?.[0] === call.title && (call.name == null || call.name === match[1])) {
           candidates.push({ tool: match[1], source: 'devin-title' })
         }
-      } else if (wireProfile === 'kimi') {
-        candidates.push({ tool: qualified(call.title), source: 'kimi-title' })
       }
     }
     const first = candidates[0]
@@ -693,7 +727,7 @@ export async function createDshToolBridge(
       return { source: first.source }
     return { tool: first.tool, source: first.source }
   }
-  const definitionOf = (call: acp.ToolCallUpdate): ToolDefinition | undefined => {
+  const definitionOf = (call: acp.ToolCallUpdate): ToolSchema | undefined => {
     const tool = identityOf(call).tool
     return tool === undefined ? undefined : names.get(tool)
   }
@@ -715,85 +749,25 @@ export async function createDshToolBridge(
   // Freeze a durable session default before the first prompt. Failure stays
   // fail-closed in each permission resolver below.
   if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
-  // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-  // HMR may re-instantiate the same capability while an ACP prompt is active.
-  // An equal visible schema keeps the lease serving that prompt; after the
-  // prompt ends a changed definition closes the lease again.
-  const promptActive = (): boolean => prompt !== undefined && !prompt.aborted
-  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => {
-    // The selected executor owns this transport; its selection is revalidated
-    // when the call dispatches through `tools.execute`.
-    if (executorOwned.has(name)) return true
-    const current = tools.get(name, agent)
-    if (current === undefined) return false
-    if (current === definition) return true
-    if (!promptActive()) return false
-    const schema = (candidate: ToolDefinition): ToolSchema => ({
-      name: candidate.name,
-      description: candidate.description,
-      parameters: candidate.parameters,
-    })
-    return schemaValueKey([schema(current)]) === schemaValueKey([schema(definition)])
-  }
-  const live = (): boolean =>
-    !lifetime.signal.aborted &&
-    agents.get(sessionId as never) === agent &&
-    (teamContext?.isLive() ?? true) &&
-    [...definitions].every(([name, definition]) => isDefinitionLive(name, definition))
-  // Native tools decide their own overlap; only an exact `true` opts into a
-  // parallel group, and a missing or throwing classifier stays exclusive.
-  const executionModeOf = (
-    name: string,
-    args: unknown,
-    toolSet: ResolvedToolSet | undefined,
-  ): 'exclusive' | 'parallel' => {
-    const definition = tools.executable(name, agent, toolSet)
-    if (definition?.isConcurrencySafe === undefined) return 'exclusive'
-    try {
-      return definition.isConcurrencySafe(args) === true ? 'parallel' : 'exclusive'
-    } catch {
-      return 'exclusive'
-    }
-  }
-  // One ACP prompt is one admission scope: resolve step conditions once and
-  // release the admitted set when that prompt ends (or the lease closes).
-  let admittedTools: { readonly generation: number; readonly set: Promise<ResolvedToolSet | undefined> } | undefined
-  const disposeAdmittedTools = (): void => {
-    const current = admittedTools
-    admittedTools = undefined
-    if (current !== undefined)
-      void current.set.then(
-        (set) => set?.dispose(),
-        () => undefined,
-      )
-  }
-  const admittedToolsForPrompt = async (): Promise<ResolvedToolSet | undefined> => {
-    const signal = prompt
-    if (signal === undefined || signal.aborted) return undefined
-    const options = agent.options
-    const selection =
-      agent.model?.current?.() ??
-      (options?.provider !== undefined && options.model !== undefined
-        ? { provider: options.provider, model: options.model }
-        : undefined)
-    if (selection === undefined) return undefined
-    if (admittedTools?.generation !== promptGeneration) {
-      const generation = promptGeneration
-      const set = tools.resolve({ agent, modelSelection: selection, signal })
-      admittedTools = { generation, set }
-      // A prompt that ended before resolution finished must not retain the set.
-      void set.then(
-        (resolved) => {
-          if (generation !== promptGeneration) resolved.dispose()
-        },
-        () => undefined,
-      )
-    }
-    return await admittedTools.set
+  const elicitationTarget = (request: acp.CreateElicitationRequest, toolCall: acp.ToolCallUpdate | undefined) => {
+    const form = request as { toolCallId?: unknown }
+    if (
+      wireProfile !== 'codex' ||
+      request.mode !== 'form' ||
+      request._meta?.codex_approval_kind !== 'mcp_tool_call' ||
+      form.toolCallId === undefined ||
+      toolCall === undefined ||
+      toolCall.toolCallId !== form.toolCallId ||
+      toolCall._meta?.is_mcp_tool_call !== true
+    )
+      return undefined
+    const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
+    return input?.server === serverName && typeof input.tool === 'string' ? names.get(input.tool) : undefined
   }
   const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = async (request) => {
-    const capturedPrompt = prompt
-    const capturedGeneration = promptGeneration
+    directory.clearPermission(request)
+    const captured = directory.capturePrompt()
+    const capturedPrompt = captured.signal
     const call = request.toolCall
     const identity = identityOf(call)
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
@@ -820,8 +794,10 @@ export async function createDshToolBridge(
     // registration has retired this bridge. A matching DSH title remains
     // ambiguous evidence and must not bypass the bridge's liveness fence.
     if (identity.tool === undefined && !facts.titleMatchesCurrentTool) return { ...facts, reason: 'identity-unmatched' }
-    if (!live()) return { ...facts, reason: 'inactive-connection' }
+    if (!directory.isLive()) return { ...facts, reason: 'inactive-connection' }
     if (capturedPrompt === undefined || capturedPrompt.aborted) return { ...facts, reason: 'inactive-prompt' }
+    const captureFence = (definition: ToolSchema, revocationOnly = false): AbortSignal =>
+      directory.capturePermission(request, captured, definition, revocationOnly)
     const definition = definitionOf(call)
     if (definition === undefined) {
       // An identified call to our own server with an unknown name cannot
@@ -838,16 +814,36 @@ export async function createDshToolBridge(
           },
         }
       }
+      // A matching title is not authority for Auto or execution. It only
+      // keeps this ambiguous manual question revocable with its advertised target.
+      const titleTarget = titleName === undefined ? undefined : names.get(titleName)
+      if (titleTarget !== undefined) captureFence(titleTarget, true)
       return { ...facts, reason: 'identity-unmatched' }
+    }
+    // The tool was replaced or revoked after this connection advertised it.
+    // Approval could not make it executable, so refuse this one request and
+    // leave the connection's remaining tools usable.
+    if (!directory.isDefinitionLive(definition.name, definition)) {
+      const reject = request.options.find((option) => option.kind === 'reject_once')
+      return {
+        ...facts,
+        toolName: definition.name,
+        reason: 'invalid-tool-name',
+        response: {
+          outcome: reject === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: reject.optionId },
+        },
+      }
     }
     const toolName = definition.name
     const identified = {
       ...facts,
       toolName,
     }
+    const targetSignal = captureFence(definition)
     const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
-    if (prompt !== capturedPrompt || promptGeneration !== capturedGeneration || capturedPrompt.aborted || !live())
-      return { ...identified, reason: 'inactive-prompt' }
+    if (!directory.isCurrent(captured)) return { ...identified, reason: 'inactive-prompt' }
+    if (targetSignal.aborted || !directory.isDefinitionLive(definition.name, definition))
+      return { ...identified, reason: 'invalid-tool-name', response: { outcome: { outcome: 'cancelled' } } }
     // Policy reads fail closed. A cancelled response prevents the Agent from
     // treating an unavailable host policy as permission to proceed.
     if (policy === undefined) {
@@ -857,8 +853,7 @@ export async function createDshToolBridge(
     // policy. Recognizing a DSH tool proves its target, not that Auto may answer
     // the independent Agent's permission request on the user's behalf.
     if (policy !== 'auto' || wireProfile === 'devin') return { ...identified, reason: 'approval-required' }
-    if (!live() || prompt !== capturedPrompt || promptGeneration !== capturedGeneration || capturedPrompt.aborted)
-      return { ...identified, reason: 'inactive-prompt' }
+    if (!directory.isCurrent(captured)) return { ...identified, reason: 'inactive-prompt' }
     const allows = request.options.filter((option) => option.kind === 'allow_once')
     const ids = request.options.map((option) => option.optionId)
     const boundedOptions =
@@ -870,15 +865,17 @@ export async function createDshToolBridge(
     const allow = boundedOptions && allows.length === 1 && new Set(ids).size === ids.length ? allows[0] : undefined
     return allow === undefined
       ? { ...identified, reason: 'allow-once-unavailable' }
-      : (permissionFences.set(request, { generation: capturedGeneration, prompt: capturedPrompt }),
-        {
+      : {
           ...identified,
           reason: 'auto-approved',
           response: { outcome: { outcome: 'selected', optionId: allow.optionId } },
-        })
+        }
   }
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
+  const waitForAcceptedCalls = async (): Promise<void> => {
+    while (calls.size > 0) await Promise.allSettled([...calls])
+  }
   // MCP GET streams can stay open indefinitely. Only admitted POST response
   // tails carry a request result that must drain before transport disposal.
   const responseTails = new Set<Promise<void>>()
@@ -886,9 +883,45 @@ export async function createDshToolBridge(
   // Legacy cancellation is a separate stateless HTTP request handled by another Server instance.
   // Keep only active lease-local calls here so that notification can reach the executing request.
   const activeCalls = new Map<string | number, AbortController>()
+  // Accepted calls by tool, so withdrawing one tool cancels its own work and nothing else.
+  const callsByTool = new Map<string, Set<AbortController>>()
+  // A replacement withdraws and republishes a name in one synchronous burst;
+  // judge after it settles. A name still absent then was revoked (restricted,
+  // or its provider removed) and its accepted calls must not keep running.
+  const cancelWithdrawnToolCalls = (): void => {
+    queueMicrotask(() => {
+      if (lifetime.signal.aborted) return
+      for (const [name, running] of callsByTool) {
+        if (name === RUN_CODE_NAME || tools.get(name, agent) !== undefined) continue
+        for (const cancellation of running) cancellation.abort(new Error('DSH tool withdrawn'))
+      }
+    })
+  }
+  let retirePipelineConsumer: (() => Promise<void>) | undefined
+  let pipelineOwnerClosing = false
+  let pipeline: ToolExecutionPipeline | undefined
+  const pipelineOwner = await ctx.inject(['tools'], (child) => {
+    pipeline = new ToolExecutionPipeline(child)
+    child.effect(() => async () => {
+      pipelineOwnerClosing = true
+      lifetime.abort(new Error('DSH tools provider unloaded'))
+      try {
+        await retirePipelineConsumer?.()
+      } finally {
+        // Transport grace is not a bound on accepted native execution. Keep
+        // this actual tools consumer alive through result/feedback settlement.
+        await waitForAcceptedCalls()
+      }
+    })
+  })
+  const executionPipeline = pipeline
+  if (executionPipeline === undefined || pipelineOwnerClosing) {
+    await pipelineOwner.dispose()
+    return undefined
+  }
   const http = createServer((request, response) => {
     if (
-      !live() ||
+      !directory.isLive(false) ||
       request.url !== path ||
       request.headers.origin !== undefined ||
       request.headers.host !== `127.0.0.1:${port}`
@@ -925,14 +958,13 @@ export async function createDshToolBridge(
     })
     server.setRequestHandler('tools/list', async () => ({
       tools: [...names]
-        .filter(([name, definition]) => isDefinitionLive(name, definition))
-        .map(([name, definition]) => ({
+        .filter(([name, definition]) => directory.isDefinitionLive(name, definition, false))
+        .map(([name]) => ({
           name,
           description: visible.get(name)!.description,
           inputSchema: {
             ...visible.get(name)!.parameters,
             type: 'object' as const,
-            ...teamContext?.spawnSchema(definition),
           },
         })),
     }))
@@ -984,21 +1016,26 @@ export async function createDshToolBridge(
         activeCalls.delete(requestId)
         return { isError: true, content: [{ type: 'text' as const, text: 'ACP_TEAM_PROMPT_INACTIVE' }] }
       }
+      const callAdmission = readAdmission?.(agent)
+      const sameAdmission = () =>
+        readAdmission === undefined || (readAdmission(agent) === callAdmission && callAdmission?.isActive() === true)
       const callRecord: ToolCallRecord = {}
       callPrompt.calls.add(callRecord)
       const call = (async () => {
         const definition = names.get(request.params.name)
-        if (!live() || prompt === undefined || prompt.aborted) throw new Error('ACP_TEAM_PROMPT_INACTIVE')
-        if (definition === undefined || !isDefinitionLive(definition.name, definition))
+        if (!directory.isLive() || !sameAdmission() || directory.prompt === undefined || directory.prompt.aborted)
+          throw new Error('ACP_TEAM_PROMPT_INACTIVE')
+        if (definition === undefined || !directory.isDefinitionLive(definition.name, definition))
           throw new Error('ACP_TEAM_TOOL_UNAVAILABLE')
+        const running = callsByTool.get(definition.name) ?? new Set()
+        callsByTool.set(definition.name, running.add(cancellation))
         const args = request.params.arguments ?? {}
-        teamContext?.validateArguments(definition, args)
         const membership = definition.name === 'send_message' ? teamContext?.membership() : undefined
         const membershipRole = membership?.role
         const membershipId = membership?.id
         const membershipRoot = membership?.root
-        const executedPrompt = prompt
-        const executedGeneration = promptGeneration
+        const executedPrompt = directory.prompt
+        const executedGeneration = directory.generation
         const hostCallId = `acp-team-${randomUUID()}`
         const dispatchSignal = AbortSignal.any([
           lifetime.signal,
@@ -1063,37 +1100,42 @@ export async function createDshToolBridge(
           let diagnosticTargetRole: LiveDiagnosticTargetRole | undefined
           if (diagnosticEnabled && definition.name === 'send_message') {
             try {
-              diagnosticTargetRole =
-                args.target === 'lead'
-                  ? 'lead'
-                  : typeof args.target === 'string' &&
-                      teamContext
-                        ?.listMembers()
-                        .some((member) => member.name === args.target && member.role === 'teammate')
-                    ? 'teammate'
-                    : 'unknown'
+              diagnosticTargetRole = teamContext?.isLeadReference(args.agent) === true ? 'lead' : 'unknown'
             } catch {
               diagnosticTargetRole = 'unknown'
             }
           }
-          const toolSet = await admittedToolsForPrompt()
           releaseExecution = await executionScheduler.acquire(
-            () => executionModeOf(definition.name, args, toolSet),
+            () =>
+              executionPipeline.executionMode({
+                callId: hostCallId as never,
+                name: definition.name,
+                arguments: args,
+                agent,
+                ...(callAdmission === undefined ? {} : { toolSet: callAdmission.toolSet }),
+                signal: dispatchSignal,
+              }).kind,
             dispatchSignal,
           )
           if (
             releaseExecution === undefined ||
             dispatchSignal.aborted ||
             !callPrompt.accepting ||
-            prompt !== executedPrompt ||
-            promptGeneration !== executedGeneration ||
-            !live()
+            directory.prompt !== executedPrompt ||
+            directory.generation !== executedGeneration ||
+            !sameAdmission() ||
+            !directory.isLive()
           ) {
             // The request was admitted to this prompt but never crossed the
             // Host ToolRuntime boundary. A natural terminal must report this
             // known non-execution rather than treating it as settled success.
             callRecord.abortedBeforeDispatch = true
             throw new Error('ACP_TEAM_PROMPT_INACTIVE')
+          }
+          if (!directory.isDefinitionLive(definition.name, definition)) {
+            // Replaced or revoked while queued: a known non-execution of this tool only.
+            callRecord.abortedBeforeDispatch = true
+            throw new Error('ACP_TEAM_TOOL_UNAVAILABLE')
           }
           const inboxCounts = diagnosticEnabled ? diagnosticInboxCounts(agent) : undefined
           const diagnosticBase =
@@ -1175,35 +1217,33 @@ export async function createDshToolBridge(
             if (bodySignal.aborted) onDispatchAbort()
           }
           let result: ToolExecutionResult
-          let batchContexts: readonly unknown[] = []
+          let batch: ToolBatchResult
           try {
-            // The registry executes complete batches; a single ACP call is a
-            // one-element batch, and its deferred context belongs to the batch.
-            const call: ToolCallBlock = {
-              type: 'tool-call',
-              id: ToolCallId(hostCallId),
-              name: definition.name,
-              arguments: JSON.stringify(args ?? {}),
-            }
-            const batch = await agents.withInitiator(agent, () =>
+            batch = await agents.withInitiator(agent, () =>
               tools.execute({
-                calls: [call],
+                calls: [
+                  {
+                    type: 'tool-call',
+                    id: hostCallId as never,
+                    name: definition.name,
+                    arguments: JSON.stringify(args),
+                  },
+                ],
                 agent,
+                ...(callAdmission === undefined ? {} : { toolSet: callAdmission.toolSet }),
                 signal: bodySignal,
-                ...(toolSet === undefined ? {} : { toolSet }),
               }),
             )
-            const settledCall = batch.results[0]
-            if (settledCall === undefined) throw new Error('ACP_HOST_TOOL_BATCH_EMPTY')
-            result = settledCall.result
-            batchContexts = batch.additionalContexts
-
+            if (batch.results.length !== 1 || batch.results[0]?.callId !== hostCallId) {
+              throw new ToolBatchExecutionError(new Error('ACP_HOST_TOOL_RESULT_MISMATCH'), batch)
+            }
+            result = batch.results[0].result
             if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
               callRecord.abortedBeforeDispatch = true
             if (diagnosticEnabled && diagnosticBase !== undefined) {
               const diagnosticOutcome = collectLiveDiagnostic(() => ({
                 hostResultIsError: result.isError === true,
-                errorKind: diagnosticErrorKind(result.error),
+                errorKind: diagnosticErrorKind(result.error, trace),
               }))
               emitLiveDiagnostic({
                 type: 'host-execute/settled',
@@ -1219,8 +1259,25 @@ export async function createDshToolBridge(
               })
             }
           } catch (error) {
+            if (error instanceof ToolBatchExecutionError) {
+              // The wrapper's message is fixed; only its cause names the failure.
+              try {
+                if (ctx.logger !== undefined)
+                  createAcpLogger(ctx.logger).warn(`dsh-acp: ${toolFailureText(error)}`, {
+                    dshSessionId: sessionId,
+                    operation: 'tool-execute',
+                    result: 'batch-failed',
+                  })
+              } catch {
+                // Logging cannot change the settlement of an accepted call.
+              }
+              for (const context of error.partial.additionalContexts) injectFeedback(context, callPrompt)
+              callPrompt.batchFailed = true
+              callPrompt.accepting = false
+              callPrompt.queueAbort.abort(error)
+            }
             if (diagnosticEnabled && diagnosticBase !== undefined) {
-              const errorKind = collectLiveDiagnostic(() => diagnosticErrorKind(error))
+              const errorKind = collectLiveDiagnostic(() => diagnosticErrorKind(error, trace))
               emitLiveDiagnostic({
                 type: 'host-execute/settled',
                 ...diagnosticBase,
@@ -1233,7 +1290,7 @@ export async function createDshToolBridge(
           } finally {
             bodySignal.removeEventListener('abort', onDispatchAbort)
           }
-          const additionalContexts = batchContexts
+          const additionalContexts = batch.additionalContexts
           for (const context of additionalContexts) injectFeedback(context, callPrompt)
           if (callPrompt.feedbackCommitFailed)
             throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
@@ -1260,15 +1317,16 @@ export async function createDshToolBridge(
             !bodySignal.aborted &&
             !context.mcpReq.signal.aborted &&
             !cancellation.signal.aborted &&
-            prompt === executedPrompt &&
-            promptGeneration === executedGeneration &&
-            live()
+            directory.prompt === executedPrompt &&
+            directory.generation === executedGeneration &&
+            sameAdmission() &&
+            directory.isLive()
           )
             onSuccessfulToolResult?.()
           const currentMembership = teamContext?.membership()
           if (
             definition.name === 'send_message' &&
-            args.target === 'lead' &&
+            teamContext?.isLeadReference(args.agent) === true &&
             typeof args.message === 'string' &&
             args.message.trim().length > 0 &&
             result.isError !== true &&
@@ -1280,25 +1338,27 @@ export async function createDshToolBridge(
             !executedPrompt.aborted &&
             !context.mcpReq.signal.aborted &&
             !cancellation.signal.aborted &&
-            prompt === executedPrompt &&
-            promptGeneration === executedGeneration &&
-            live()
+            directory.prompt === executedPrompt &&
+            directory.generation === executedGeneration &&
+            sameAdmission() &&
+            directory.isLive()
           ) {
             onTeamReport?.()
           }
           if (
             result.isError !== true &&
-            result.concludesTurn === true &&
+            batch.concluded &&
             executedPrompt !== undefined &&
             !executedPrompt.aborted &&
             !context.mcpReq.signal.aborted &&
             !cancellation.signal.aborted &&
-            prompt === executedPrompt &&
-            promptGeneration === executedGeneration &&
-            live()
+            directory.prompt === executedPrompt &&
+            directory.generation === executedGeneration &&
+            sameAdmission() &&
+            directory.isLive()
           )
             onTurnConcluded?.()
-          if (result.concludesTurn === true)
+          if (batch.concluded)
             content.push({
               type: 'text',
               text: generatedContextBlock(
@@ -1321,7 +1381,7 @@ export async function createDshToolBridge(
                 "DSH has queued input for your next step. End this ACP response now with a brief progress update, without further tool calls or a final answer; DSH will deliver the pending input and continue the turn. If you make another tool call, this yield instruction expires; follow the latest tool response's handoff state instead.",
               ),
             })
-          else if (callPrompt.yieldInstructionPending && result.concludesTurn !== true)
+          else if (callPrompt.yieldInstructionPending && !batch.concluded)
             content.push({
               type: 'text',
               text: generatedContextBlock(
@@ -1346,7 +1406,7 @@ export async function createDshToolBridge(
                 additionalContextsCount: additionalContexts.length,
                 repeatReminderContextCount,
                 pendingYieldAppended: pendingInput && !repeatToolReminderPending,
-                concludesTurnReminderAppended: result.concludesTurn === true,
+                concludesTurnReminderAppended: batch.concluded,
                 durationMs: Math.max(0, Math.round(performance.now() - dispatchStartedAt)),
                 handlerIsError,
                 resultStatus: handlerIsError ? 'error' : 'success',
@@ -1363,7 +1423,7 @@ export async function createDshToolBridge(
         return await call
       } catch (error) {
         if (liveDiagnosticTraceEnabled() && diagnosticHandlerBase !== undefined) {
-          const errorKind = diagnosticErrorKind(error)
+          const errorKind = diagnosticErrorKind(error, trace)
           emitLiveDiagnostic({
             type: 'mcp-handler/returned',
             ...diagnosticHandlerBase,
@@ -1374,12 +1434,13 @@ export async function createDshToolBridge(
         }
         return {
           isError: true,
-          content: [{ type: 'text' as const, text: error instanceof Error ? error.message : 'ACP_TEAM_TOOL_FAILED' }],
+          content: [{ type: 'text' as const, text: toolFailureText(error) }],
         }
       } finally {
         calls.delete(call)
         callPrompt.calls.delete(callRecord)
         if (activeCalls.get(requestId) === cancellation) activeCalls.delete(requestId)
+        callsByTool.get(request.params.name)?.delete(cancellation)
       }
     })
     const transport = new NodeStreamableHTTPServerTransport({ enableJsonResponse: true })
@@ -1405,6 +1466,9 @@ export async function createDshToolBridge(
       port = address.port
       resolve()
     })
+  }).catch(async (error) => {
+    await pipelineOwner.dispose()
+    throw error
   })
   const url = `http://127.0.0.1:${port}${path}`
   const servers: acp.McpServer[] =
@@ -1425,18 +1489,19 @@ export async function createDshToolBridge(
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH tools connection: MCP server ${serverName}. When discovering this connection's tools in a shared catalog, first select the exact server namespace ${serverName} and list only tool names, then inspect the definitions of the tools you need. A truncated or partial catalog is not evidence that a tool is unavailable; narrow the lookup before deciding. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    needsRefresh: () => directory.needsRefresh(),
+    instructions: `Current DSH tools connection: MCP server ${serverName}. ${toolDiscoveryInstructions(wireProfile)} ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Agent names resolve within the caller’s subagent tree.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     ...(diagnosticLeaseId === undefined ? {} : { diagnosticLeaseId }),
     beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {
+      if ([...drainingPrompts].some((scope) => scope.batchFailed))
+        throw new AcpHostSettlementError('ACP_HOST_TOOL_RECONCILIATION_REQUIRED')
       if (promptExecution?.accepting === true || calls.size > 0 || pendingFeedback.size > 0)
         throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
-      disposeAdmittedTools()
-      prompt = signal
+      directory.beginPrompt(signal)
       onTeamReport = reportCallback
       onTurnConcluded = concludedCallback
       onSuccessfulToolResult = successfulToolResultCallback
-      promptGeneration++
       if (liveDiagnosticTraceEnabled()) leasePromptOrdinal++
       adapterPromptOrdinal = promptOrdinal
       presented.clear()
@@ -1444,11 +1509,12 @@ export async function createDshToolBridge(
       identifiedWaitCalls.clear()
       waitCallsWithOtherContent.clear()
       promptExecution = {
-        generation: promptGeneration,
+        generation: directory.generation,
         calls: new Set(),
         terminalCalls: new Set(),
         queueAbort: new AbortController(),
         bodySignal: bodySignal ?? signal,
+        batchFailed: false,
         feedbackCommitFailed: false,
         yieldInstructionPending: false,
         accepting: true,
@@ -1457,6 +1523,7 @@ export async function createDshToolBridge(
       }
     },
     endPrompt(options) {
+      directory.endPrompt()
       const ended = promptExecution
       if (ended !== undefined) {
         ended.accepting = false
@@ -1467,17 +1534,11 @@ export async function createDshToolBridge(
         drainingPrompts.add(ended)
       }
       promptExecution = undefined
-      prompt = undefined
       onTeamReport = undefined
       onTurnConcluded = undefined
       onSuccessfulToolResult = undefined
-      promptGeneration++
       adapterPromptOrdinal = undefined
       presented.clear()
-      disposeAdmittedTools()
-      // A definition reloaded during the prompt keeps it live there; once the
-      // prompt is over, the stale binding can no longer serve later calls.
-      if (!live()) void lease.close()
     },
     async drainPrompt() {
       const pending = [...drainingPrompts]
@@ -1487,6 +1548,10 @@ export async function createDshToolBridge(
             await Promise.allSettled(
               [...scope.calls].flatMap((call) => (call.promise === undefined ? [] : [call.promise])),
             )
+          if (scope.batchFailed)
+            throw new AcpHostSettlementError('ACP_HOST_TOOL_RECONCILIATION_REQUIRED', {
+              remoteOutcomeKnown: scope.remoteOutcomeKnown,
+            })
           if ([...pendingFeedback.values()].some((entry) => entry.scope === scope))
             throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
               remoteOutcomeKnown: scope.remoteOutcomeKnown,
@@ -1556,12 +1621,13 @@ export async function createDshToolBridge(
         scope.feedbackCommitFailed = [...pendingFeedback.values()].some((entry) => entry.scope === scope)
         if (
           !scope.feedbackCommitFailed &&
+          !scope.batchFailed &&
           promptExecution === scope &&
           !scope.remoteOutcomeKnown &&
           !scope.externallyAborted
         )
           scope.accepting = true
-        if (scope.calls.size === 0 && !scope.feedbackCommitFailed) drainingPrompts.delete(scope)
+        if (scope.calls.size === 0 && !scope.feedbackCommitFailed && !scope.batchFailed) drainingPrompts.delete(scope)
       }
     },
     hasPendingCalls() {
@@ -1573,9 +1639,7 @@ export async function createDshToolBridge(
     hasRetainedFeedback() {
       return pendingFeedback.size > 0
     },
-    async waitForCallsSettled() {
-      while (calls.size > 0) await Promise.allSettled([...calls])
-    },
+    waitForCallsSettled: waitForAcceptedCalls,
     presentTool(call) {
       if (wireProfile === 'antigravity' && isAntigravityInteractionCall(call)) return call
       const identity = identityOf(call)
@@ -1602,7 +1666,13 @@ export async function createDshToolBridge(
         if (conflictingInput) {
           identifiedWaitCalls.delete(call.toolCallId)
           deferredWaitReceipts.revoke(call.toolCallId)
-        } else if (definition?.name === 'wait_agent' && live() && prompt !== undefined && !prompt.aborted) {
+        } else if (
+          definition?.name === 'wait_agent' &&
+          directory.isLive() &&
+          directory.isDefinitionLive(definition.name, definition) &&
+          directory.prompt !== undefined &&
+          !directory.prompt.aborted
+        ) {
           identifiedWaitCalls.add(call.toolCallId)
         } else if (identity.source !== undefined && !(identity.source === 'name' && call.name === 'wait_agent')) {
           identifiedWaitCalls.delete(call.toolCallId)
@@ -1610,9 +1680,9 @@ export async function createDshToolBridge(
         }
         if (
           call.rawOutput !== undefined &&
-          live() &&
-          prompt !== undefined &&
-          !prompt.aborted &&
+          directory.isLive() &&
+          directory.prompt !== undefined &&
+          !directory.prompt.aborted &&
           identifiedWaitCalls.has(call.toolCallId)
         ) {
           deferredWaitReceipts.observe(call.toolCallId, call.rawOutput)
@@ -1628,10 +1698,14 @@ export async function createDshToolBridge(
       const presentTeam = (result: acp.ToolCallUpdate): acp.ToolCallUpdate =>
         teamContext !== undefined &&
         definition !== undefined &&
-        (definition.name === 'spawn_teammate' || definition.name === 'send_message') &&
-        live() &&
-        prompt !== undefined &&
-        !prompt.aborted
+        (definition.name === 'subagent' ||
+          definition.name === 'subagent_fork' ||
+          definition.name === 'subagent_oar' ||
+          definition.name === 'send_message') &&
+        directory.isLive() &&
+        directory.isDefinitionLive(definition.name, definition) &&
+        directory.prompt !== undefined &&
+        !directory.prompt.aborted
           ? withDshTeamPermissionPresentation(result, {
               tool: definition.name,
               ...(typeof agent.session?.header.cwd === 'string' ? { workspace: agent.session.header.cwd } : {}),
@@ -1679,36 +1753,40 @@ export async function createDshToolBridge(
       })
     },
     toolControlOutcome(toolCallId) {
-      return live() && prompt !== undefined && !prompt.aborted ? deferredWaitReceipts.outcome(toolCallId) : undefined
+      return directory.isLive() && directory.prompt !== undefined && !directory.prompt.aborted
+        ? deferredWaitReceipts.outcome(toolCallId)
+        : undefined
     },
     inspectPermission,
+    permissionSignal(request) {
+      return directory.permissionSignal(request)
+    },
     validatePermissionDecision(request) {
-      const fence = permissionFences.get(request)
-      if (
-        fence === undefined ||
-        !live() ||
-        prompt !== fence.prompt ||
-        promptGeneration !== fence.generation ||
-        fence.prompt.aborted
-      )
-        return false
-      const definition = definitionOf(request.toolCall)
-      return (
-        definition !== undefined &&
-        names.get(definition.name) === definition &&
-        isDefinitionLive(definition.name, definition)
-      )
+      return directory.validatePermission(request, () => definitionOf(request.toolCall))
     },
     async permission(request) {
       return (await inspectPermission(request)).response
+    },
+    elicitationSignal(request, toolCall) {
+      const existing = directory.permissionSignal(request)
+      if (existing !== undefined) return existing
+      const target = elicitationTarget(request, toolCall)
+      const captured = directory.capturePrompt()
+      return target === undefined || captured.signal === undefined
+        ? undefined
+        : directory.capturePermission(request, captured, target)
+    },
+    validateElicitationDecision(request, toolCall) {
+      if (directory.permissionSignal(request) === undefined) return undefined
+      return directory.validatePermission(request, () => elicitationTarget(request, toolCall))
     },
     elicitationToolName(request, toolCall) {
       const form = request as { toolCallId?: unknown }
       if (
         wireProfile !== 'codex' ||
-        !live() ||
-        prompt === undefined ||
-        prompt.aborted ||
+        !directory.isLive() ||
+        directory.prompt === undefined ||
+        directory.prompt.aborted ||
         request.mode !== 'form' ||
         toolCall === undefined ||
         form.toolCallId !== toolCall.toolCallId
@@ -1721,39 +1799,22 @@ export async function createDshToolBridge(
       // Presentation only: don't rewrite arbitrary messages or infer authority
       // by stripping a prefix. Preserve additional context from other requests.
       if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
-      return names.get(input.tool)?.name
+      const definition = names.get(input.tool)
+      return definition !== undefined && directory.isDefinitionLive(definition.name, definition)
+        ? definition.name
+        : undefined
     },
     async elicitation(request, toolCall) {
       const form = request as {
         toolCallId?: unknown
         requestedSchema?: { properties?: Record<string, unknown>; required?: unknown[] }
       }
-      if (
-        wireProfile !== 'codex' ||
-        !live() ||
-        prompt === undefined ||
-        prompt.aborted ||
-        request.mode !== 'form' ||
-        request._meta?.codex_approval_kind !== 'mcp_tool_call' ||
-        form.toolCallId === undefined ||
-        toolCall === undefined ||
-        toolCall.toolCallId !== form.toolCallId ||
-        toolCall._meta?.is_mcp_tool_call !== true
-      )
-        return undefined
-      const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
-      if (input?.server !== serverName || typeof input.tool !== 'string' || !names.has(input.tool)) return undefined
-      const capturedPrompt = prompt
-      const capturedGeneration = promptGeneration
+      if (!directory.isLive() || directory.prompt === undefined || directory.prompt.aborted) return undefined
+      const target = elicitationTarget(request, toolCall)
+      if (target === undefined || !directory.isDefinitionLive(target.name, target)) return undefined
+      const captured = directory.capturePrompt()
       const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
-      if (
-        policy !== 'auto' ||
-        capturedPrompt === undefined ||
-        capturedPrompt.aborted ||
-        prompt !== capturedPrompt ||
-        promptGeneration !== capturedGeneration ||
-        !live()
-      )
+      if (policy !== 'auto' || !directory.isCurrent(captured) || !directory.isDefinitionLive(target.name, target))
         return undefined
       // Codex may add the persistence selector to an otherwise empty tool-approval form.
       // Never answer unrelated fields or grant persistent permission.
@@ -1781,7 +1842,6 @@ export async function createDshToolBridge(
     close(graceMs = 5_000) {
       closing ??= (async () => {
         lifetime.abort(new Error('ACP DSH tools connection closed'))
-        disposeAdmittedTools()
         deferredWaitReceipts.clear()
         identifiedWaitCalls.clear()
         waitCallsWithOtherContent.clear()
@@ -1791,7 +1851,7 @@ export async function createDshToolBridge(
           drainingPrompts.add(promptExecution)
           promptExecution = undefined
         }
-        prompt = undefined
+        directory.endPrompt()
         presented.clear()
         // Revoke execution and stop admission immediately, but keep admitted
         // HTTP responses alive until their handlers have delivered settlement.
@@ -1804,18 +1864,37 @@ export async function createDshToolBridge(
         http.closeAllConnections()
         await waitWithin(closed, graceMs)
         await waitWithin(Promise.allSettled([...sessions].map((server) => server.close())), graceMs)
-        await waitWithin(lease.waitForCallsSettled!(), graceMs)
+        await waitWithin(waitForAcceptedCalls(), graceMs)
       })()
-      return closing
+      return closing.then(async () => {
+        // Owner-triggered close must not await its own disposer. Ordinary
+        // transport close stays bounded. Cordis retains this consumer's
+        // committed tools dependency until its accepted-call drain completes,
+        // even when provider withdrawal starts after consumer disposal.
+        if (pipelineOwnerClosing) return
+        const retirement = pipelineOwner.dispose()
+        if (calls.size === 0) return await retirement
+        void retirement.catch((error) => ctx.logger.error(error))
+      })
     },
   }
-  listeners.push(
-    ctx.on('tools/change', () => {
-      // A schema-equal re-registration stays live for the active prompt; any
-      // real restriction, removal or schema change still closes immediately.
-      if (!live()) void lease.close()
-    }),
-  )
+  retirePipelineConsumer = () => lease.close()
+  if (pipelineOwnerClosing) {
+    await lease.close()
+    return undefined
+  }
+  const refreshDirectory = (): void => {
+    if (!directory.isLive(false)) {
+      void lease.close()
+      return
+    }
+    // Revocation is sticky for this advertised owner. Even an empty directory
+    // keeps the transport alive for accepted responses and native Agent work.
+    // A later prompt must resolve a fresh directory; never bind names in place.
+    directory.revokeStaleTools()
+    cancelWithdrawnToolCalls()
+  }
+  listeners.push(ctx.on('tools/change', refreshDirectory))
   listeners.push(
     ctx.on('agent/disposed', ({ agent: disposed }) => {
       if (disposed === agent) void lease.close()
@@ -1823,8 +1902,8 @@ export async function createDshToolBridge(
   )
   listeners.push(
     ctx.on('internal/service', (name) => {
-      if (!['agentTeams', 'agents', 'tools'].includes(name)) return
-      if (!live()) void lease.close()
+      if (!['subagents', 'agents', 'tools'].includes(name)) return
+      refreshDirectory()
     }),
   )
   return lease

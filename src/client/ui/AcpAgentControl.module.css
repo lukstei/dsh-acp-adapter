@@ -3,7 +3,7 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
-  max-width: 100%;
+  max-width: 220px;
   height: 28px;
   padding: 0 4px 0 8px;
   border: none;
@@ -30,8 +30,10 @@
   text-align: left;
 }
 
-.trigger:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .trigger:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .trigger:focus-visible {
@@ -96,17 +98,6 @@
   display: inline-flex;
   min-width: 0;
   max-width: 100%;
-  flex-shrink: 1;
-}
-.menuRoot {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 100%;
-}
-@container (max-width: 460px) {
-  .triggerPrefix {
-    display: none;
-  }
 }
 .choice {
   display: flex;

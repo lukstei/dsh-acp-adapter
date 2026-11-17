@@ -9,13 +9,13 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { createAcpSidecar, type AcpBindingData } from '../../../src/persistence/sidecar.ts'
-import { installAcpExecutionProjection } from '../../support/session-facts.ts'
+import { AcpSessionFacts } from '../../../src/host/composition/session-facts.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
+import { subagentIdentityProjectionDefinition } from '@deepseek-ai/dsh-subagent/src/projection.ts'
 import { createToolApprovalPolicyReader } from '../../../src/host/subagent/tool-approval-policy.ts'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -62,12 +62,13 @@ async function setup(residual: ResidualBinding) {
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
+  await ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime)
-  await ctx.plugin(NativeToolExecutor)
+  await ctx.plugin(NativeExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
-  await installAcpExecutionProjection(ctx)
+  await ctx.plugin(AcpSessionFacts)
   const dispose = () => () => {}
   ctx.provide('typert', {
     lookups: { configure: dispose },
@@ -81,9 +82,20 @@ async function setup(residual: ResidualBinding) {
   } as never)
   const llm = new LocalAdapter()
   ctx.llm.registerAdapter(['acp-old', 'deepseek', 'acp-child'], llm)
-  const mountGuard = (): Fiber => ctx.plugin((scope) => installAcpBackendGuard(scope, { sidecar }))
+  const mountGuard = (): Fiber =>
+    ctx.plugin((scope) =>
+      installAcpBackendGuard(scope, { sidecar, ownsProvider: (provider) => provider === 'acp-codex' }),
+    )
   const firstGuard = await mountGuard()
   const parent = await ctx.agentLoop.create(SessionId('parent'), { provider: 'acp-old', model: 'local' })
+  ctx.provide('subagents', {
+    rootOf: (agent: Agent) => {
+      if (ctx.agents.get(agent.id) !== agent || (agent !== parent && agent.session.header.parentSession !== parent.id))
+        throw new Error('UNAUTHORIZED')
+      return parent
+    },
+    namesOf: (agent: Agent) => ({ self: agent === parent ? 'lead' : 'child' }),
+  } as never)
   await send(parent)
   expect(llm.calls).toEqual(['acp-old'])
   const binding: AcpBindingData = {
@@ -115,17 +127,19 @@ async function setup(residual: ResidualBinding) {
   const read = createToolApprovalPolicyReader(ctx, {
     sidecar,
     sessionOf: (id) => ctx.sessions.get(SessionId(id)),
-    ownsProvider: (id) => id === 'child' || (residual !== 'removed' && id === 'old'),
+    ownsProvider: (route) => route === 'acp-child' || (residual !== 'removed' && route === 'acp-old'),
+    isForeignProvider: (route) => route === 'deepseek' || (residual === 'removed' && route === 'acp-old'),
     defaultPolicy: () => 'ask',
   })
-  const createChild = async () =>
-    (
-      await ctx.agents.create({
-        sessionId: SessionId('child'),
-        agentOptions: { provider: 'acp-child', model: 'local' },
-        meta: { parentSession: parent.id, origin: 'subagent' },
-      })
-    ).agent
+  const createChild = async () => {
+    const { agent } = await ctx.agents.create({
+      sessionId: SessionId('child'),
+      agentOptions: { provider: 'acp-child', model: 'local' },
+      meta: { parentSession: parent.id, origin: 'subagent' },
+    })
+    agent.session.append('subagent/descriptor', { version: 3, mode: 'continuable', provider: 'spawn', label: 'child' })
+    return agent
+  }
   return { ctx, sidecar, llm, parent, createChild, read, firstGuard, mountGuard }
 }
 
@@ -144,7 +158,7 @@ it.each(['owned', 'removed', 'outdated'] as const)(
     await send(h.parent)
     expect(h.llm.calls).toEqual(['acp-old', 'deepseek', 'deepseek'])
     const child = await h.createChild()
-    await expect(h.read(child.id)).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    await expect(h.read(child.id)).resolves.toMatchObject({ policy: 'ask', source: 'lead', editable: false })
     await expect(h.sidecar.readToolApprovalPolicy(h.parent.id)).resolves.toBe('auto')
   },
 )
@@ -154,10 +168,8 @@ it.each(['owned', 'removed', 'outdated'] as const)(
   async (residual) => {
     const h = await setup(residual)
     h.parent.model.select({ provider: 'deepseek', model: 'local' })
-    expect(h.ctx.sessionProjections.stateOf(h.parent.session, 'modelSelection')).toMatchObject({
-      lastUsed: { provider: 'acp-old' },
-      pending: { provider: 'deepseek' },
-    })
+    expect(h.parent.session.requestHeader()?.config.provider).toBe('acp-old')
+    expect(h.parent.model.current()?.provider).toBe('deepseek')
     const child = await h.createChild()
     if (residual === 'owned') {
       await expect(h.read(child.id)).resolves.toMatchObject({ policy: 'auto' })

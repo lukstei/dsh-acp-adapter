@@ -1,11 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis'
 import { applySessionFact, initialSessionFacts, type SessionLike } from '../../src/domain/session/session-facts.ts'
-import { acpExecutionProjection, retainAcpExecutionProjection } from '../../src/host/composition/session-facts.ts'
-
-/** Register the ACP execution projection and retain its awaited reader. */
-export async function installAcpExecutionProjection(ctx: Context): Promise<void> {
-  retainAcpExecutionProjection(await ctx.sessionProjections.register(acpExecutionProjection))
-}
 
 /** Legacy event fixtures exercise the same fold; production never scans snapshots. */
 export function withSessionFacts<
