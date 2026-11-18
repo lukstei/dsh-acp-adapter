@@ -293,4 +293,20 @@ it('forwards successful Host-result evidence and separates bridge instructions i
   forwarded?.()
   expect(callbackCount).toBe(1)
   expect(echoed).toContain('generated bridge instructions\n\noriginal user content')
+
+  let echoedTurn2 = ''
+  await runtime.prompt([{ type: 'text', text: 'turn 2 content' }], (notification) => {
+    if (notification.update.sessionUpdate === 'agent_message_chunk')
+      echoedTurn2 += notification.update.content.type === 'text' ? notification.update.content.text : ''
+  })
+  expect(echoedTurn2).not.toContain('generated bridge instructions')
+  expect(echoedTurn2).toContain('turn 2 content')
+
+  Object.assign(mcpLease, { instructions: 'updated bridge instructions' })
+  let echoedTurn3 = ''
+  await runtime.prompt([{ type: 'text', text: 'turn 3 content' }], (notification) => {
+    if (notification.update.sessionUpdate === 'agent_message_chunk')
+      echoedTurn3 += notification.update.content.type === 'text' ? notification.update.content.text : ''
+  })
+  expect(echoedTurn3).toContain('updated bridge instructions\n\nturn 3 content')
 })

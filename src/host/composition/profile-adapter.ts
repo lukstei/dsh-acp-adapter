@@ -441,6 +441,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     { readonly sessionId?: string; readonly key: string }
   >()
   private readonly deliveredHostInstructions = new WeakMap<AcpProfileRuntime, string>()
+  private readonly deliveredModelContextSnapshots = new WeakMap<AcpProfileRuntime, string>()
 
   constructor(
     readonly profileId: string,
@@ -1471,6 +1472,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         let qwenContextKey: string | undefined
         let qwenContextWillBeDelivered = true
         let promptSystem: string | undefined
+        let promptSnapshotsKey: string | undefined
         // Capability negotiation is deliberately before session/new, restore,
         // WAL, or prompt. Invalid/unsupported input therefore cannot create an
         // ACP session or a durable dispatch record.
@@ -1489,6 +1491,14 @@ export class AcpProfileAdapter extends LlmAdapter {
           const modelContextSnapshots = session?.currentModelContextSnapshots?.()
           promptSystem = hostSystemPrompt(options)
           const deliveredSystem = forceBlank ? undefined : self.deliveredHostInstructions.get(runtime)
+          const snapshots = modelContextSnapshots ?? currentModelContextSnapshots(messages)
+          const snapshotsKey = acpCanonicalHash16({
+            skillRoute: skillRouteForTools(options.tools),
+            snapshots: snapshots.map(({ source, text }) => ({ source, text })),
+          })
+          const deliveredSnapshots = forceBlank ? undefined : self.deliveredModelContextSnapshots.get(runtime)
+          const snapshotsUnchanged = deliveredSnapshots === snapshotsKey
+          promptSnapshotsKey = snapshotsKey
           // A session that ACP never executed may already hold conversation:
           // another plugin answered this route, or an earlier turn failed
           // before any Agent session existed. Its first Agent session receives
@@ -1506,7 +1516,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             (await durableSidecar.readLatestBinding(sessionKey as never)) === undefined
           const promptOptions = {
             ...(deliveredSystem === promptSystem ? {} : { system: promptSystem }),
-            ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
+            ...(snapshotsUnchanged || modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
             ...(forceBlank || undeliveredStart ? { reboundAgentInstructions: options.messages } : {}),
             ...(undeliveredStart ? { undeliveredHistory: options.messages } : {}),
             skillRoute: skillRouteForTools(options.tools),
@@ -1521,7 +1531,6 @@ export class AcpProfileAdapter extends LlmAdapter {
             )
           // Store the validated prompt for the dispatch path below.
           validatedPrompt = prompt
-          const snapshots = modelContextSnapshots ?? currentModelContextSnapshots(messages)
           qwenContextKey = acpCanonicalHash16({
             system: promptSystem,
             skillRoute: promptOptions.skillRoute,
@@ -2574,9 +2583,13 @@ export class AcpProfileAdapter extends LlmAdapter {
             !steeringInstructionsPending &&
             !promptSignal.aborted &&
             promptSystem !== undefined
-          )
+          ) {
             self.deliveredHostInstructions.set(runtime, promptSystem)
-          else self.deliveredHostInstructions.delete(runtime)
+            if (promptSnapshotsKey !== undefined) self.deliveredModelContextSnapshots.set(runtime, promptSnapshotsKey)
+          } else {
+            self.deliveredHostInstructions.delete(runtime)
+            self.deliveredModelContextSnapshots.delete(runtime)
+          }
         }
         let teammateReportEligible = true
         let teammateReportConfirmed = false
@@ -2616,16 +2629,23 @@ export class AcpProfileAdapter extends LlmAdapter {
           let nextProof: CurrentStepProof | undefined
           let nextPrompt: acp.ContentBlock[]
           let nextSystem: string | undefined
+          let nextSnapshotsKey: string | undefined
           try {
             const nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
               nextProof = proof
             })
             if (nextProof?.turn !== admissionProof?.turn) return false
             const modelContextSnapshots = session?.currentModelContextSnapshots?.()
+            const nextSnapshots = modelContextSnapshots ?? currentModelContextSnapshots(nextMessages)
+            nextSnapshotsKey = acpCanonicalHash16({
+              skillRoute: skillRouteForTools(nextOptions.tools),
+              snapshots: nextSnapshots.map(({ source, text }) => ({ source, text })),
+            })
+            const nextSnapshotsUnchanged = promptSnapshotsKey === nextSnapshotsKey
             nextSystem = hostSystemPrompt(nextOptions)
             nextPrompt = await toAcpPrompt(nextMessages, {
               ...(promptSystem === nextSystem ? {} : { system: nextSystem }),
-              ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
+              ...(nextSnapshotsUnchanged || modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
               skillRoute: skillRouteForTools(nextOptions.tools),
               imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
               ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
@@ -2655,9 +2675,11 @@ export class AcpProfileAdapter extends LlmAdapter {
             const previousSuccessfulToolResultConfirmed = successfulToolResultConfirmed
             const previousRemoteCancellationHook = remoteCancellationHook
             const previousSystem = promptSystem
+            const previousSnapshotsKey = promptSnapshotsKey
             const restoreSegment = reply.holdSteeringBoundary()
             restoreProjection = (): void => {
               promptSystem = previousSystem
+              promptSnapshotsKey = previousSnapshotsKey
               steeringInstructionsPending = false
               updateDeliveredHostInstructions()
               remoteCancellationHook = previousRemoteCancellationHook
@@ -2679,6 +2701,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // whether the Agent accepted these replacement instructions.
             steeringInstructionsPending = true
             self.deliveredHostInstructions.delete(runtime)
+            self.deliveredModelContextSnapshots.delete(runtime)
             remoteCancellationHook = captureRemoteCancellationHook(nextProof)
             currentAnchor = nextProof!.anchorMessageId
             // A pending pull may contain the old segment's final text. It will
@@ -2720,6 +2743,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             return false
           }
           promptSystem = nextSystem
+          promptSnapshotsKey = nextSnapshotsKey
           steeringInstructionsPending = false
           // The old prompt may have completed while this ACK was in flight.
           // Its settlement never waits for the steering response.

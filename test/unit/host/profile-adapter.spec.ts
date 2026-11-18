@@ -189,6 +189,54 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     expect(JSON.stringify(sent[2])).toContain('HOST_SYSTEM_B')
   })
 
+  it('omits redundant model context snapshots on subsequent turns within the same session when unchanged', async () => {
+    const sent: unknown[] = []
+    let currentMessage = user('turn 1')
+    let currentSnapshots = [{ source: 'runtime-context' as const, id: 'ctx-1', text: 'RUNTIME_CONTEXT_A' }]
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => {
+        const s = session(currentMessage)
+        ;(s as unknown as { currentModelContextSnapshots: () => unknown }).currentModelContextSnapshots = () =>
+          currentSnapshots
+        return s
+      },
+      new Ledger(),
+      undefined,
+      () => ({
+        acpSessionId: 'strip-redundant-snapshots',
+        start: async () => undefined,
+        prompt: async (prompt, onUpdate) => {
+          sent.push(prompt)
+          onUpdate({
+            sessionId: 'strip-redundant-snapshots',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Completed' } },
+          })
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => undefined,
+      }),
+      durableSidecar,
+    )
+    const turn1 = request('strip-redundant-snapshots', [currentMessage])
+    for await (const chunk of adapter.stream(turn1)) void chunk
+    expect(JSON.stringify(sent[0])).toContain('RUNTIME_CONTEXT_A')
+
+    currentMessage = user('turn 2')
+    const turn2 = request('strip-redundant-snapshots', [currentMessage])
+    for await (const chunk of adapter.stream(turn2)) void chunk
+    expect(JSON.stringify(sent[1])).not.toContain('RUNTIME_CONTEXT_A')
+    expect(JSON.stringify(sent[1])).not.toContain('Complete current DSH model context projection')
+
+    currentMessage = user('turn 3')
+    currentSnapshots = [{ source: 'runtime-context' as const, id: 'ctx-2', text: 'RUNTIME_CONTEXT_B' }]
+    const turn3 = request('strip-redundant-snapshots', [currentMessage])
+    for await (const chunk of adapter.stream(turn3)) void chunk
+    expect(JSON.stringify(sent[2])).toContain('RUNTIME_CONTEXT_B')
+  })
+
   it.each(['native', 'ptc'] as const)(
     'projects the real DSH effective context through composition into a new ACP binding (%s)',
     async (mode) => {

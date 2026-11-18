@@ -466,6 +466,7 @@ export class AcpSessionRuntime {
   private promptToolSnapshots: Map<string, acp.ToolCallUpdate> | undefined
   private readonly cancelGraceMs: number
   private readonly retiredMcpLeases = new Set<AcpMcpLease>()
+  private deliveredMcpInstructions: { readonly sessionId: string; readonly text: string } | undefined
 
   constructor(private readonly options: AcpSessionRuntimeOptions) {
     this.cancelGraceMs = options.cancelGraceMs ?? ACP_CANCEL_SETTLE_GRACE_MS
@@ -957,6 +958,9 @@ export class AcpSessionRuntime {
       // in-flight JSON-RPC request poisons the connection. ACP cancellation is a
       // protocol notification followed by a bounded wait for this same prompt.
       const instructions = this.mcpLease?.instructions
+      const instructionsNeeded =
+        instructions !== undefined &&
+        (this.deliveredMcpInstructions?.sessionId !== sessionId || this.deliveredMcpInstructions?.text !== instructions)
       const deliver = (notification: AcpSessionNotification): void => {
         const update = notification.update
         // Permission snapshots retain the original wire identity; only the presentation callback is normalized.
@@ -974,11 +978,11 @@ export class AcpSessionRuntime {
       const wirePrompt = async (wireContent: acp.ContentBlock[]): Promise<acp.PromptResponse> => {
         this.wirePromptActive = true
         try {
-          return await connection.prompt(
+          const response = await connection.prompt(
             sessionId,
-            instructions === undefined
-              ? wireContent
-              : [{ type: 'text', text: generatedContextBlock(instructions) }, ...wireContent],
+            instructionsNeeded
+              ? [{ type: 'text', text: generatedContextBlock(instructions!) }, ...wireContent]
+              : wireContent,
             (notification) => {
               // Qwen's discrete "background task completed" line is task state,
               // not part of the assistant answer.
@@ -990,6 +994,10 @@ export class AcpSessionRuntime {
               deliver(notification)
             },
           )
+          if (instructions !== undefined && instructionsNeeded) {
+            this.deliveredMcpInstructions = { sessionId, text: instructions }
+          }
+          return response
         } finally {
           this.wirePromptActive = false
         }
@@ -1251,6 +1259,7 @@ export class AcpSessionRuntime {
     qwenTasks?.beginClose()
     this.promptToolSnapshots?.clear()
     this.promptToolSnapshots = undefined
+    this.deliveredMcpInstructions = undefined
     connectionAbort?.abort()
 
     // MCP teardown is bounded independently. The subprocess owns a separate
