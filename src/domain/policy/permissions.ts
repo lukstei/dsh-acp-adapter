@@ -148,6 +148,27 @@ function firstString(record: Record<string, unknown> | undefined, keys: readonly
   }
   return undefined
 }
+const contentKeys = ['code_content', 'content', 'file_content', 'new_string', 'text'] as const
+
+function summarizeContent(record: Record<string, unknown>): Record<string, unknown> {
+  let changed = false
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (
+      typeof value === 'string' &&
+      (value.includes('\n') || value.length > 120) &&
+      contentKeys.some((k) => k.toLowerCase() === key.toLowerCase())
+    ) {
+      const lineCount = value.split('\n').length
+      result[key] = '[' + lineCount + ' line' + (lineCount === 1 ? '' : 's') + ', ' + Buffer.byteLength(value, 'utf8') + ' bytes]'
+      changed = true
+    } else {
+      result[key] = value
+    }
+  }
+  return changed ? result : record
+}
+
 /** Keep both input and target facts; neither is a replacement for the other. */
 function permissionInputDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   let input = tool.rawInput
@@ -162,6 +183,8 @@ function permissionInputDetail(tool: acp.RequestPermissionRequest['toolCall']): 
       input = Object.keys(remaining).length === 0 ? undefined : remaining
     }
   }
+  const record = recordValue(input)
+  if (record !== undefined) input = summarizeContent(record)
   const details =
     tool.locations === undefined
       ? input

@@ -646,6 +646,54 @@ describe('native ACP permission bridge', () => {
     expect(question?.detail).not.toContain('\u001b')
     expect(question?.detail).not.toContain('…')
   })
+
+  it('summarizes multi-line and large content payloads in approval reason and details', async () => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({ id: 'live-agent' }) })
+    const codeContent = ['const a = 1', 'const b = 2', 'const c = 3', ''].join('\n')
+    await handler({
+      sessionId: 'acp-session',
+      toolCall: {
+        toolCallId: 'edit-1',
+        title: 'Edit file',
+        name: 'client_edit_file',
+        status: 'pending',
+        rawInput: { target_file: '/tmp/test.ts', code_content: codeContent },
+      },
+      options: [option('allow', 'Allow once', 'allow_once'), option('reject', 'Reject', 'reject_once')],
+    })
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: expect.stringContaining('[4 lines, 36 bytes]'),
+      }),
+    )
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: expect.not.stringContaining('const a = 1'),
+      }),
+    )
+  })
+
+  it('keeps short single-line content payloads intact without summarization', async () => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({ id: 'live-agent' }) })
+    await handler({
+      sessionId: 'acp-session',
+      toolCall: {
+        toolCallId: 'edit-2',
+        title: 'Edit file',
+        name: 'client_edit_file',
+        status: 'pending',
+        rawInput: { target_file: '/tmp/short.txt', text: 'short content' },
+      },
+      options: [option('allow', 'Allow once', 'allow_once'), option('reject', 'Reject', 'reject_once')],
+    })
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: expect.stringContaining('"text": "short content"'),
+      }),
+    )
+  })
 })
 
 it.each([
