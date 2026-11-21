@@ -619,17 +619,18 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     expect(runtimes[0]?.config.env).toEqual({ TOKEN: 'old' })
   })
 
-  it('identity edit fails closed after an established generation, while a blank session uses the new one', async () => {
+  it('launch edit keeps an established session on its runtime, while a blank session uses the new one', async () => {
     let current = profile('old-agent', { TOKEN: 'old' })
     const ledger = new Ledger()
     const runtimes: AcpAgentConfig[] = []
     const first = user('one')
     const second = user('two')
+    let oldSessionMessage = first
     const adapter = new AcpProfileAdapter(
       'test',
       () => current,
       seam(),
-      (id) => (id === 'old-session' ? session(first) : session(second)),
+      (id) => (id === 'old-session' ? session(oldSessionMessage) : session(second)),
       ledger,
       undefined,
       (options) => {
@@ -647,13 +648,10 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       /* drain */
     }
     current = profile('new-agent', { TOKEN: 'new' })
-    await expect(
-      (async () => {
-        for await (const _chunk of adapter.stream(request('old-session', [first]))) {
-          /* drain */
-        }
-      })(),
-    ).rejects.toMatchObject({ code: 'ACP_RECONCILIATION_REQUIRED' })
+    oldSessionMessage = user('three')
+    for await (const _chunk of adapter.stream(request('old-session', [oldSessionMessage]))) {
+      /* drain */
+    }
     for await (const _chunk of adapter.stream(request('blank-session', [second]))) {
       /* drain */
     }

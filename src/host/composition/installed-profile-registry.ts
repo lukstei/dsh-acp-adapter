@@ -27,9 +27,9 @@ import { externalAgentPermissionQuestions } from './external-agent-questions.ts'
 import { AcpProfileAdapter } from './profile-adapter.ts'
 import { installWorkingDirectoryGuard } from './working-directory-guard.ts'
 import { installAcpForkTools } from './fork-tools.ts'
-import { profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
+import { acpLaunchFingerprint } from '../../domain/session/launch-fingerprint.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
-import { installAcpSidecar } from '../../persistence/sidecar.ts'
+import { acpCanonicalHash16, installAcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
@@ -737,7 +737,7 @@ export async function installInstalledProfileRegistry(
     // runtime edits. Values are hashed and never enter the registration key.
     const identities = Object.entries(availableAgents)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([id, config]) => [id, profileLaunchIdentityHash(id, config)] as const)
+      .map(([id, config]) => [id, acpCanonicalHash16(acpLaunchFingerprint({ profileId: id, config }))] as const)
     const key = JSON.stringify({ facts, identities })
     if (key === registeredKey) {
       activeAgents = { ...availableAgents }

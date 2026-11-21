@@ -459,7 +459,7 @@ it('keeps a pending Stop handoff gated when its target directory changes again b
   }
 })
 
-it('keeps changed profiles and mismatched pending binding facts visible as real recovery gates', async () => {
+it('keeps mismatched pending binding facts visible as real recovery gates', async () => {
   const world = await fixture({ stop: true })
   try {
     await drain(world.adapter.stream(world.request))
@@ -477,7 +477,7 @@ it('keeps changed profiles and mismatched pending binding facts visible as real 
       expect(await world.adapter.isAutomaticDirectoryHandoff('s', { ...pending, ...changed })).toBe(false)
     }
     world.setCommand('different-agent')
-    expect(await world.adapter.isAutomaticDirectoryHandoff('s', pending)).toBe(false)
+    expect(await world.adapter.isAutomaticDirectoryHandoff('s', pending)).toBe(true)
     expect(await world.sidecar.readRecoveryState('s' as never)).toEqual(pending)
     expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(0)
   } finally {

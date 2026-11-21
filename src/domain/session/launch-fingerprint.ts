@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto'
 import { effectiveRuntimeOf, type AcpStubAgentConfig } from './agent-config.ts'
 import { executableOverrideEnvFor } from '../../agents/compatibility.ts'
 import { ACP_NATIVE_XDG_ENV_KEYS } from '../policy/sandbox.ts'
-import { acpCanonicalHash16, type AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
+import type { AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
 /** {@link acpLaunchFingerprint} 的输入。 */
 export interface AcpLaunchFingerprintInput {
@@ -56,8 +56,10 @@ export function profileLaunchIdentityHash(
   config: AcpStubAgentConfig,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const fingerprint = acpLaunchFingerprint({ profileId, config, env })
-  return createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex').slice(0, 16)
+  // Local deviation: only profile + runtime kind (codex/claude/...) identify a launch, so
+  // editing command/args/env mid-session never changes the runtime key or blocks recovery.
+  const { profileId: id, descriptorId } = acpLaunchFingerprint({ profileId, config, env })
+  return createHash('sha256').update(JSON.stringify({ id, descriptorId })).digest('hex').slice(0, 16)
 }
 
 /**
@@ -133,16 +135,9 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
   }
 }
 
-/** Ignore retired catalog versions and manual tool lists, retaining execution identity.
- * Saved bindings are never rewritten: fork evidence and mode intents still refer
- * to the exact persisted record. This does not relax runtime Agent identity checks.
+/** Local deviation: a saved binding stays valid while profile and runtime kind match; launch
+ * command/args/env edits no longer block resume. Saved bindings are never rewritten.
  */
 export function acpLaunchFingerprintsCompatible(saved: AcpLaunchFingerprint, current: AcpLaunchFingerprint): boolean {
-  const normalize = (value: AcpLaunchFingerprint) => ({
-    ...value,
-    adapterVersion: null,
-    wrappedCliVersion: null,
-    mcpFingerprint: null,
-  })
-  return acpCanonicalHash16(normalize(saved)) === acpCanonicalHash16(normalize(current))
+  return saved.profileId === current.profileId && saved.descriptorId === current.descriptorId
 }

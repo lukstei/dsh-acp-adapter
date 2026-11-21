@@ -120,7 +120,7 @@ describe('session HTTP MCP loopback routing', () => {
     expect(process.env.no_proxy).toBeUndefined()
   })
 
-  it('keeps inherited routing out of launch identity while retaining native state identity', async () => {
+  it('keeps inherited routing out of launch identity while still recording native state in the fingerprint', async () => {
     const profile = config()
     const first = { HOME: '/stable-home', CODEX_HOME: '/stable-codex', NO_PROXY: 'first.internal' }
     const second = { ...first, NO_PROXY: 'second.internal', no_proxy: '*.internal' }
@@ -130,7 +130,15 @@ describe('session HTTP MCP loopback routing', () => {
     expect(acpLaunchFingerprint({ profileId: 'work-codex', config: profile, env: first })).toEqual(
       acpLaunchFingerprint({ profileId: 'work-codex', config: profile, env: second }),
     )
-    expect(profileLaunchIdentityHash('work-codex', profile, first)).not.toBe(
+    // Native state is still recorded in the fingerprint, but no longer part of the launch identity.
+    expect(acpLaunchFingerprint({ profileId: 'work-codex', config: profile, env: first })).not.toEqual(
+      acpLaunchFingerprint({
+        profileId: 'work-codex',
+        config: profile,
+        env: { ...second, CODEX_HOME: '/other-codex' },
+      }),
+    )
+    expect(profileLaunchIdentityHash('work-codex', profile, first)).toBe(
       profileLaunchIdentityHash('work-codex', profile, { ...second, CODEX_HOME: '/other-codex' }),
     )
   })

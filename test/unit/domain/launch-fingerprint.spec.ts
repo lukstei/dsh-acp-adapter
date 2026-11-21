@@ -137,16 +137,14 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
 
 describe('effective launch environment identity', () => {
   it.each(['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME'])(
-    'tracks inherited %s in both fingerprints',
+    'records inherited %s in the fingerprint but not in the launch identity',
     (key) => {
       const config = baseConfig()
       const first = { [key]: '/first' },
         second = { [key]: '/second' }
       const fingerprint = (env: Record<string, string>) => acpLaunchFingerprint({ ...baseInput(), config, env })
       expect(fingerprint(first)).not.toEqual(fingerprint(second))
-      expect(profileLaunchIdentityHash('codex', config, first)).not.toBe(
-        profileLaunchIdentityHash('codex', config, second),
-      )
+      expect(profileLaunchIdentityHash('codex', config, first)).toBe(profileLaunchIdentityHash('codex', config, second))
     },
   )
 
@@ -169,24 +167,22 @@ describe('effective launch environment identity', () => {
 })
 
 describe('registry reference upgrade continuity', () => {
-  it('ignores retired reference versions, retaining execution identity fields', () => {
+  it('ignores retired reference versions and launch edits, retaining profile and runtime kind', () => {
     const current = acpLaunchFingerprint(baseInput())
     const old = { ...current, adapterVersion: '1.6.2', wrappedCliVersion: '0.36.1' }
     expect(acpCanonicalHash16(old)).not.toBe(acpCanonicalHash16(current))
     expect(acpLaunchFingerprintsCompatible(old, current)).toBe(true)
+    // Only profile and runtime kind (codex/claude/...) identify a saved binding.
+    for (const changed of [{ profileId: 'renamed' }, { descriptorId: 'claude' }])
+      expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(false)
     for (const changed of [
       { command: 'other' },
       { args: ['--other'] },
-      { profileId: 'renamed' },
-      { descriptorId: 'claude' },
       { explicitEnv: [] },
       { nativeStateEnv: [] },
-      { envRefs: [{ key: 'KEY', present: true }] },
       { executableOverride: { name: 'OVERRIDE', present: true } },
     ])
-      expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(false)
-    const { nativeStateEnv: _, ...incomplete } = current
-    expect(acpLaunchFingerprintsCompatible(incomplete, current)).toBe(false)
+      expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(true)
     expect(old.adapterVersion).toBe('1.6.2')
   })
 })

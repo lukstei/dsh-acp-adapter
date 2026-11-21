@@ -874,7 +874,9 @@ export class AcpProfileAdapter extends LlmAdapter {
     // config in the generation value, but only expose a canonical fingerprint
     // hash in maps/errors so credentials can never become an index or log.
     const id = profileLaunchIdentityHash(this.profileId, profile)
-    if (this.probeGeneration?.id === id) return this.probeGeneration
+    // Local deviation: the id ignores launch edits, so the cached generation must also match the config.
+    if (this.probeGeneration?.id === id && JSON.stringify(this.probeGeneration.config) === JSON.stringify(profile))
+      return this.probeGeneration
     const generation = this.generationOfSnapshot(profile)
     this.probeGeneration = generation
     return generation

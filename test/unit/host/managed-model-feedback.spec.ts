@@ -81,10 +81,10 @@ it('warns on a first switch using a corroborated inline model limit, without exp
   expect(matchedManagedContextUsage({ ...reading, size: 9000 }, a, feedback)).toBeNull()
   expect((await readManagedModelFeedback(store, 's', binding, config, new Set([a]))).capacityRisks).toBeUndefined()
   const changedConfig = { ...config, env: { OPENCODE_CONFIG_CONTENT: config.env.OPENCODE_CONFIG_CONTENT + ' ' } }
-  expect((await readManagedModelFeedback(store, 's', binding, changedConfig, models)).capacityRisks).toBeUndefined()
+  expect((await readManagedModelFeedback(store, 's', binding, changedConfig, models)).capacityRisks).toBeDefined()
   expect(
     (await readManagedModelFeedback(store, 's', binding, { ...config, command: 'other-server' }, models)).capacityRisks,
-  ).toBeUndefined()
+  ).toBeDefined()
   await usage(a, 16280, 25600).commit(store, 's', { ...binding, committedPromptOrdinal: 2 }, a)
   expect((await readManagedModelFeedback(store, 's', binding, config, models)).capacityRisks).toBeUndefined()
 })

@@ -253,13 +253,12 @@ describe('Qwen automatic failure through the Host durable owner', () => {
     expect(await h.sidecar.readRecoveryState('qwen-host-owner' as never)).toMatchObject({ kind: 'outcome-unknown' })
   })
 
-  it.each(['directory', 'profile'] as const)(
+  it.each(['directory'] as const)(
     'retains the recovery gate when a new %s fails preflight',
-    async (change) => {
+    async () => {
       const h = await harness()
       h.fail()
-      if (change === 'directory') h.changeDirectory()
-      else h.changeProfile()
+      h.changeDirectory()
       await expect(
         consume(h.adapter.stream(h.request(user('do not send into changed context')))),
       ).rejects.toMatchObject({
@@ -269,7 +268,7 @@ describe('Qwen automatic failure through the Host durable owner', () => {
       expect(h.dispatches).toHaveLength(1)
       expect(await h.sidecar.readRecoveryState('qwen-host-owner' as never)).toMatchObject({
         kind: 'reconciliation-required',
-        cause: change === 'directory' ? 'cwd-changed' : 'profile-changed',
+        cause: 'cwd-changed',
       })
       await h.adapter.close()
       const nextPrompt = vi.fn<AcpProfileRuntime['prompt']>(async (...args) => h.runtime.prompt(...args))

@@ -27,6 +27,6 @@ describe('retired manual DSH tools configuration', () => {
     const saved = { ...current, mcpFingerprint: '0123456789abcdef' }
     expect(acpLaunchFingerprintsCompatible(saved, current)).toBe(true)
     expect(saved.mcpFingerprint).toBe('0123456789abcdef')
-    expect(acpLaunchFingerprintsCompatible(saved, { ...current, command: 'another-agent' })).toBe(false)
+    expect(acpLaunchFingerprintsCompatible(saved, { ...current, command: 'another-agent' })).toBe(true)
   })
 })

@@ -911,11 +911,11 @@ describe('M3a binding-first ACP provider', () => {
     }
   })
 
-  it('requires the original profile generation, then retries the original binding after the setting is restored', async () => {
+  it('keeps resuming the original binding after a launch config edit', async () => {
     const { sidecar, root } = sidecarAt()
     try {
       const message = user('hello')
-      const live = session(message)
+      let live = session(message)
       let current = profile()
       const records = { starts: 0, prompts: 0, restores: 0 }
       const adapter = new AcpProfileAdapter(
@@ -930,12 +930,10 @@ describe('M3a binding-first ACP provider', () => {
       )
       await drain(adapter.stream(request('generation-retry', message)))
       current = { ...profile(), args: ['changed'] }
-      await expect(drain(adapter.stream(request('generation-retry', message)))).rejects.toMatchObject({
-        code: 'ACP_RECONCILIATION_REQUIRED',
-      })
-      current = profile()
-      await adapter.retryOriginal('generation-retry')
-      expect(records.restores).toBe(1)
+      const next = user('continue')
+      live = session(next)
+      await drain(adapter.stream(request('generation-retry', next)))
+      expect(records.prompts).toBe(2)
       expect((await sidecar.readRecoveryState('generation-retry' as never))?.kind).toBe('healthy')
     } finally {
       await sidecar.dispose()
@@ -1175,7 +1173,7 @@ describe('runtime failure and host disposal ownership', () => {
   )
 
   it.each(['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'legacy'])(
-    'blocks incompatible %s environment identity after restart without rewriting old bindings',
+    'resumes after a changed %s environment identity',
     async (key) => {
       const { sidecar, root } = sidecarAt()
       const message = user('first')
@@ -1207,7 +1205,6 @@ describe('runtime failure and host disposal ownership', () => {
             },
           })
         } else vi.stubEnv(key, '/test/home-b')
-        const saved = await sidecar.readLatestBinding('drift' as never)
         const next = user('continue'),
           records = { starts: 0, prompts: 0, restores: 0 }
         const close = vi.fn(async () => {})
@@ -1222,13 +1219,9 @@ describe('runtime failure and host disposal ownership', () => {
           factory,
           sidecar,
         )
-        await expect(drain(restarted.stream(request('drift', next)))).rejects.toMatchObject({
-          code: 'ACP_RECONCILIATION_REQUIRED',
-        })
-        expect(records).toEqual({ starts: 0, prompts: 0, restores: 0 })
-        expect(close).toHaveBeenCalledOnce()
-        expect((await sidecar.readRecoveryState('drift' as never))?.cause).toBe('profile-changed')
-        expect(await sidecar.readLatestBinding('drift' as never)).toEqual(saved)
+        await drain(restarted.stream(request('drift', next)))
+        expect(records.prompts).toBe(1)
+        expect((await sidecar.readRecoveryState('drift' as never))?.kind).toBe('healthy')
       } finally {
         vi.unstubAllEnvs()
         await initial.close()

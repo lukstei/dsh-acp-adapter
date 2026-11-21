@@ -276,7 +276,7 @@ describe('session-scoped ACP image capability', () => {
     expect((await resolve('model-b')).inputModalities).toBeUndefined()
     owner.state.image = true
     h.changeProfile()
-    expect((await resolve('model-b')).inputModalities).toBeUndefined()
+    expect((await resolve('model-b')).inputModalities).toEqual(['text', 'image'])
   })
 
   it('preserves the native uploaded-image entry point before a live model proof exists', async () => {
